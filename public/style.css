@@ -1,0 +1,84 @@
+:root {
+  --bg: #0E0F0C; --card: #17181A; --card2: #202226; --line: #2C2E33;
+  --text: #F3F1EA; --muted: #A6A59E; --accent: #D4F25A; --danger: #FF8A7A;
+  --protein: #86B6FF; --fat: #F4A259; --carbs: #E6DFCC;
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; background: var(--bg); color: var(--text); }
+body {
+  font-family: Manrope, "Segoe UI", system-ui, sans-serif;
+  min-height: 100vh;
+}
+#app {
+  min-height: 100vh; display: flex; flex-direction: column;
+  padding: 16px 16px calc(24px + env(safe-area-inset-bottom, 0px));
+}
+.display { font-family: Unbounded, "Arial Black", sans-serif; font-weight: 700; }
+.muted { color: var(--muted); }
+.grow { flex: 1; }
+.card { background: var(--card); border-radius: 24px; padding: 18px; margin-bottom: 12px; }
+
+/* ---- Главная ---- */
+header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+header .hello { font-size: 13px; }
+header h1 { margin: 2px 0 0; font-size: 22px; }
+.status { font-size: 12px; padding: 6px 10px; border-radius: 999px; background: var(--card); color: var(--muted); }
+.status.ok { color: var(--accent); }
+.ring-wrap { display: flex; gap: 18px; align-items: center; }
+.ring { position: relative; width: 148px; height: 148px; flex-shrink: 0; }
+.ring .center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; }
+.ring .num { font-size: 28px; }
+.ring .lbl { font-size: 12px; }
+.macros { flex: 1; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.macro .row { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 5px; gap: 6px; }
+.bar { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.bar > div { height: 6px; border-radius: 3px; }
+.small { font-size: 12px; }
+.note { font-size: 14px; line-height: 1.5; }
+
+/* ---- Кнопки ---- */
+button { font-family: inherit; cursor: pointer; }
+.primary {
+  width: 100%; height: 56px; border: none; border-radius: 16px;
+  background: var(--accent); color: var(--bg); font-size: 17px; font-weight: 700;
+}
+.primary:disabled { opacity: 0.4; }
+.secondary {
+  width: 100%; height: 52px; border-radius: 16px; border: 1px solid var(--line);
+  background: transparent; color: var(--text); font-size: 15px; font-weight: 600;
+}
+.primary:active, .secondary:active, .option:active { transform: scale(0.98); }
+
+/* ---- Анкета ---- */
+.progress { display: flex; flex-direction: column; gap: 8px; margin-bottom: 28px; }
+.progress .track { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.progress .fill { height: 6px; border-radius: 3px; background: var(--accent); transition: width .25s ease; }
+.progress .label { font-size: 13px; color: var(--muted); }
+.q-title { font-size: 26px; line-height: 1.2; margin: 0 0 8px; }
+.q-sub { font-size: 15px; line-height: 1.5; color: var(--muted); margin: 0 0 24px; }
+.options { display: flex; flex-direction: column; gap: 10px; }
+.option {
+  width: 100%; text-align: left; padding: 16px 18px; border-radius: 18px;
+  background: var(--card); color: var(--text); border: 1px solid var(--line);
+  display: flex; flex-direction: column; gap: 4px;
+}
+.option.selected { border: 2px solid var(--accent); padding: 15px 17px; }
+.option .t { font-size: 17px; font-weight: 700; }
+.option .d { font-size: 13px; color: var(--muted); }
+.field { display: flex; align-items: center; gap: 12px; background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 0 18px; }
+.field:focus-within { border-color: var(--accent); }
+.field input {
+  flex: 1; min-width: 0; height: 72px; border: none; outline: none; background: transparent;
+  color: var(--text); font-family: Unbounded, "Arial Black", sans-serif; font-weight: 700; font-size: 32px;
+}
+.field .unit { font-size: 17px; color: var(--muted); }
+.error { color: var(--danger); font-size: 14px; line-height: 1.4; min-height: 20px; margin-top: 10px; }
+
+/* ---- Результат ---- */
+.big-num { font-size: 56px; line-height: 1; letter-spacing: -1px; margin: 8px 0 10px; }
+.tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 20px 0 12px; }
+.tile { background: var(--card); border-radius: 16px; padding: 14px; display: flex; flex-direction: column; gap: 6px; }
+.tile .dot { width: 10px; height: 10px; border-radius: 5px; }
+.tile .v { font-size: 20px; }
+.tile .k { font-size: 13px; color: var(--muted); }
+.stack { display: flex; flex-direction: column; gap: 10px; margin-top: 16px; }

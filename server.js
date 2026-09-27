@@ -6,7 +6,11 @@ import express from "express";
 import { Bot, InlineKeyboard } from "grammy";
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const WEBAPP_URL = process.env.WEBAPP_URL; // адрес Mini App, например https://hayanmi.up.railway.app
+// Адрес Mini App. Railway показывает домен без https:// — добавляем сами.
+const RAW_WEBAPP_URL = (process.env.WEBAPP_URL || "").trim();
+const WEBAPP_URL = RAW_WEBAPP_URL
+  ? "https://" + RAW_WEBAPP_URL.replace(/^https?:\/\//, "").replace(/\/+$/, "")
+  : "";
 const PORT = process.env.PORT || 3000;
 
 if (!BOT_TOKEN) {
