@@ -1209,6 +1209,7 @@
           <button class="primary" id="buy" type="button">Оформить за ${fmt(plan === "year" ? prices.year : prices.month)} Stars</button>
           ${trial ? `<button class="secondary" id="trial" type="button">Попробовать ${prices.trialDays} дня бесплатно</button>` : ""}
           <button class="link-btn" id="later" type="button">Не сейчас</button>
+          ${prices.starsShop ? `<div class="small muted" style="text-align:center">Нет звёзд? <button class="inline-link" id="stars-shop" type="button">Купить Stars в ${esc(prices.starsShopName || "боте")}</button></div>` : ""}
           <div class="small muted" style="text-align:center"><button class="inline-link" id="pw-legal" type="button">Условия и конфиденциальность</button> · помощь — /paysupport в боте</div>
         </div>
         </div>`;
@@ -1222,6 +1223,12 @@
       document.getElementById("close").addEventListener("click", close);
       document.getElementById("later").addEventListener("click", close);
       document.getElementById("pw-legal").addEventListener("click", openLegal);
+      const shopBtn = document.getElementById("stars-shop");
+      if (shopBtn) shopBtn.addEventListener("click", () => {
+        haptic();
+        try { if (tg?.openTelegramLink) return tg.openTelegramLink(prices.starsShop); } catch (e) {}
+        window.open(prices.starsShop, "_blank");
+      });
     }
 
     draw();

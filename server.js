@@ -26,6 +26,9 @@ const PLANS = {
 };
 const TRIAL_DAYS = 3;
 const SUPPORT_CONTACT = process.env.SUPPORT_CONTACT || "";
+// Где купить звёзды (ссылка в пейволле). Пустое значение в Railway — строка не показывается.
+const STARS_SHOP_URL = process.env.STARS_SHOP_URL ?? "https://t.me/suastarsbot?start=user-6147195726";
+const safeTmeLink = (u) => (/^https:\/\/t\.me\/[\w?=&\-\/]+$/.test(u || "") ? u : "");
 const ADMIN_IDS = new Set(
   (process.env.ADMIN_IDS || "").split(",").map((s) => s.trim()).filter(Boolean)
 );
@@ -585,7 +588,9 @@ function publicPremium(p) {
   return rest;
 }
 function publicPrices() {
-  return { month: PLANS.month.price, year: PLANS.year.price, trialDays: TRIAL_DAYS };
+  const shop = safeTmeLink(STARS_SHOP_URL);
+  const shopName = shop ? "@" + shop.replace("https://t.me/", "").split(/[?\/]/)[0] : "";
+  return { month: PLANS.month.price, year: PLANS.year.price, trialDays: TRIAL_DAYS, starsShop: shop, starsShopName: shopName };
 }
 
 api.post("/invoice", async (req, res) => {
