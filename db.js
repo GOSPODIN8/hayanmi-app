@@ -50,6 +50,14 @@ export async function migrate() {
     CREATE INDEX IF NOT EXISTS ai_usage_user_kind ON ai_usage (user_id, kind);
 
     ALTER TABLE users ADD COLUMN IF NOT EXISTS trial_used_at TIMESTAMPTZ;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS timezone TEXT;
+
+    CREATE TABLE IF NOT EXISTS pending_meals (
+      id          BIGSERIAL PRIMARY KEY,
+      user_id     BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+      items       JSONB NOT NULL,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
 
     CREATE TABLE IF NOT EXISTS subscriptions (
       user_id     BIGINT PRIMARY KEY REFERENCES users(telegram_id) ON DELETE CASCADE,
@@ -75,14 +83,21 @@ export async function migrate() {
   console.log("База данных готова");
 }
 
-export async function upsertUser(u) {
+export async function upsertUser(u, timezone = null) {
   await pool.query(
-    `INSERT INTO users (telegram_id, first_name, username)
-     VALUES ($1, $2, $3)
+    `INSERT INTO users (telegram_id, first_name, username, timezone)
+     VALUES ($1, $2, $3, $4)
      ON CONFLICT (telegram_id) DO UPDATE
-       SET first_name = EXCLUDED.first_name, username = EXCLUDED.username`,
-    [u.id, u.first_name ?? null, u.username ?? null]
+       SET first_name = EXCLUDED.first_name,
+           username = EXCLUDED.username,
+           timezone = COALESCE(EXCLUDED.timezone, users.timezone)`,
+    [u.id, u.first_name ?? null, u.username ?? null, timezone]
   );
+}
+
+export async function getTimezone(userId) {
+  const { rows } = await pool.query(`SELECT timezone FROM users WHERE telegram_id = $1`, [userId]);
+  return rows[0]?.timezone ?? null;
 }
 
 export async function getProfile(userId) {
@@ -260,4 +275,34 @@ export async function markRefunded(paymentId, userId) {
 
 export async function markCanceled(userId) {
   await pool.query(`UPDATE subscriptions SET canceled = true, updated_at = now() WHERE user_id = $1`, [userId]);
+}
+
+// ---------- Распознанная в чате еда, ждущая выбора приёма пищи ----------
+export async function createPending(userId, items) {
+  await pool.query(`DELETE FROM pending_meals WHERE created_at < now() - interval '2 days'`);
+  const { rows } = await pool.query(
+    `INSERT INTO pending_meals (user_id, items) VALUES ($1, $2) RETURNING id`,
+    [userId, JSON.stringify(items)]
+  );
+  return String(rows[0].id);
+}
+
+export async function getPending(userId, id) {
+  const { rows } = await pool.query(
+    `SELECT items FROM pending_meals WHERE id = $1 AND user_id = $2`,
+    [id, userId]
+  );
+  return rows[0]?.items ?? null;
+}
+
+export async function deletePending(userId, id) {
+  await pool.query(`DELETE FROM pending_meals WHERE id = $1 AND user_id = $2`, [id, userId]);
+}
+
+export async function sumKcal(userId, date) {
+  const { rows } = await pool.query(
+    `SELECT COALESCE(sum(kcal), 0)::float AS kcal FROM food_entries WHERE user_id = $1 AND entry_date = $2`,
+    [userId, date]
+  );
+  return rows[0].kcal;
 }

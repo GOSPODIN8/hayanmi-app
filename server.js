@@ -37,6 +37,26 @@ if (!hasGemini()) console.warn("Нет GEMINI_API_KEY — распознаван
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// ---------- Часовой пояс пользователя ----------
+const DEFAULT_TZ = process.env.DEFAULT_TZ || "Europe/Moscow";
+function validTz(tz) {
+  if (typeof tz !== "string" || !tz || tz.length > 64) return false;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
+// Сегодняшняя дата у пользователя в формате ГГГГ-ММ-ДД
+function localDate(tz) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: validTz(tz) ? tz : DEFAULT_TZ,
+    year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(new Date());
+}
+const fmtNum = (n) => Math.round(n).toLocaleString("ru-RU");
+
 // ---------- Проверка, что запрос пришёл из Telegram ----------
 function checkInitData(initData) {
   if (!initData || typeof initData !== "string") return null;
@@ -87,7 +107,8 @@ api.use(async (req, res, next) => {
   if (!user) return res.status(401).json({ ok: false, error: "unauthorized" });
   if (!db.hasDb()) return res.status(503).json({ ok: false, error: "no_db" });
   try {
-    await db.upsertUser(user);
+    const tz = req.get("x-timezone");
+    await db.upsertUser(user, validTz(tz) ? tz : null);
     req.user = user;
     next();
   } catch (e) {
@@ -161,7 +182,7 @@ api.post("/recognize", async (req, res) => {
 });
 
 api.post("/entries", async (req, res) => {
-  const { date, meal, items } = req.body || {};
+  const { date, meal, items, pendingId } = req.body || {};
   if (!isDate(date) || !MEALS.has(meal) || !Array.isArray(items) || items.length === 0 || items.length > 20) {
     return res.status(400).json({ ok: false, error: "bad_request" });
   }
@@ -179,9 +200,23 @@ api.post("/entries", async (req, res) => {
   if (clean.length === 0) return res.status(400).json({ ok: false, error: "empty" });
   try {
     await db.addEntries(req.user.id, date, meal, clean, "photo");
+    if (typeof pendingId === "string" && /^\d+$/.test(pendingId)) await db.deletePending(req.user.id, pendingId);
     res.json({ ok: true, entries: await db.getEntries(req.user.id, date) });
   } catch (e) {
     console.error("entries:", e);
+    res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
+// Еда, распознанная в чате: открыть в приложении, чтобы поправить граммы
+api.get("/pending/:id", async (req, res) => {
+  if (!/^\d+$/.test(req.params.id)) return res.status(400).json({ ok: false, error: "bad_id" });
+  try {
+    const items = await db.getPending(req.user.id, req.params.id);
+    if (!items) return res.status(404).json({ ok: false, error: "not_found" });
+    res.json({ ok: true, items });
+  } catch (e) {
+    console.error("pending:", e);
     res.status(500).json({ ok: false, error: "server_error" });
   }
 });
@@ -277,11 +312,143 @@ bot.command("start", async (ctx) => {
 // Узнать свой Telegram ID (нужен для ADMIN_IDS)
 bot.command("myid", (ctx) => ctx.reply(`Ваш Telegram ID: ${ctx.from.id}`));
 
-bot.on("message:photo", (ctx) =>
-  ctx.reply("Распознавание фото прямо в чате появится скоро. Пока добавь фото в приложении.", {
-    reply_markup: WEBAPP_URL ? openAppKeyboard() : undefined,
-  })
-);
+// ---------- Фото еды прямо в чат ----------
+const MEAL_NAMES = { breakfast: "Завтрак", lunch: "Обед", dinner: "Ужин", snack: "Перекус" };
+
+function itemTotals(it) {
+  const k = it.grams / 100;
+  return {
+    kcal: it.per100.kcal * k, protein: it.per100.protein * k,
+    fat: it.per100.fat * k, carbs: it.per100.carbs * k,
+  };
+}
+
+function mealKeyboard(pendingId) {
+  const kb = new InlineKeyboard()
+    .text("Завтрак", `add:${pendingId}:breakfast`).text("Обед", `add:${pendingId}:lunch`).row()
+    .text("Ужин", `add:${pendingId}:dinner`).text("Перекус", `add:${pendingId}:snack`).row();
+  if (WEBAPP_URL) kb.webApp("✏️ Изменить граммы", `${WEBAPP_URL}/?pending=${pendingId}`).row();
+  return kb.text("✖️ Не добавлять", `cancel:${pendingId}`);
+}
+
+bot.on("message:photo", async (ctx) => {
+  const userId = ctx.from.id;
+  const openKb = WEBAPP_URL ? { reply_markup: openAppKeyboard() } : {};
+  if (!db.hasDb() || !hasGemini()) return ctx.reply("Распознавание временно недоступно. Попробуйте чуть позже.");
+
+  try {
+    await db.upsertUser(ctx.from);
+    const profile = await db.getProfile(userId);
+    if (!profile) {
+      return ctx.reply("Сначала ответь на пару вопросов в приложении — я рассчитаю твою норму калорий. Потом присылай фото еды сюда.", openKb);
+    }
+    const quota = await photoQuota(userId);
+    if (!quota.unlimited && quota.left <= 0) {
+      return ctx.reply(
+        "Бесплатные распознавания закончились. С Hayanmi Премиум — без ограничений: открой приложение и нажми «Премиум».",
+        openKb
+      );
+    }
+
+    await ctx.replyWithChatAction("typing");
+    const status = await ctx.reply("🔍 Распознаю еду…");
+
+    // Берём самую крупную версию фото не больше 1600 px
+    const sizes = ctx.message.photo;
+    const pick = [...sizes].reverse().find((p) => Math.max(p.width, p.height) <= 1600) || sizes[0];
+    const file = await ctx.api.getFile(pick.file_id);
+    const imgRes = await fetch(`https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`, {
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!imgRes.ok) throw new Error("Не удалось скачать фото: " + imgRes.status);
+    const base64 = Buffer.from(await imgRes.arrayBuffer()).toString("base64");
+
+    const hint = (ctx.message.caption || "").trim();
+    const result = await recognizeFood(base64, hint);
+
+    if (!result.isFood) {
+      return ctx.api.editMessageText(ctx.chat.id, status.message_id,
+        "Не вижу еды на фото 🤔 Попробуй снять тарелку сверху при хорошем свете. Эта попытка не потратила бесплатные распознавания.");
+    }
+    await db.addUsage(userId, "photo");
+    const pendingId = await db.createPending(userId, result.items);
+
+    let total = { kcal: 0, protein: 0, fat: 0, carbs: 0 };
+    const lines = result.items.map((it) => {
+      const t = itemTotals(it);
+      total = { kcal: total.kcal + t.kcal, protein: total.protein + t.protein, fat: total.fat + t.fat, carbs: total.carbs + t.carbs };
+      return `• ${it.name} — ${fmtNum(it.grams)} г · ${fmtNum(t.kcal)} ккал`;
+    });
+    const left = quota.unlimited ? "" : `\n\nБесплатных распознаваний осталось: ${Math.max(0, quota.left - 1)}`;
+    await ctx.api.editMessageText(
+      ctx.chat.id, status.message_id,
+      `🍽 Вот что я вижу:\n\n${lines.join("\n")}\n\n` +
+        `Итого: ${fmtNum(total.kcal)} ккал · Б ${fmtNum(total.protein)} · Ж ${fmtNum(total.fat)} · У ${fmtNum(total.carbs)}` +
+        `\n\nКуда добавить?${left}`,
+      { reply_markup: mealKeyboard(pendingId) }
+    );
+  } catch (e) {
+    console.error("chat photo:", e);
+    await ctx.reply("Не получилось распознать фото. Попробуй ещё раз через минуту.").catch(() => {});
+  }
+});
+
+bot.on("message:document", (ctx) => {
+  if (ctx.message.document.mime_type?.startsWith("image/")) {
+    return ctx.reply("Отправь, пожалуйста, как обычное фото (не файлом) — так я смогу его распознать.");
+  }
+});
+
+bot.callbackQuery(/^add:(\d+):(breakfast|lunch|dinner|snack)$/, async (ctx) => {
+  const [, pendingId, meal] = ctx.match;
+  const userId = ctx.from.id;
+  try {
+    const items = await db.getPending(userId, pendingId);
+    if (!items) {
+      await ctx.answerCallbackQuery({ text: "Уже добавлено или устарело" });
+      return ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+    }
+    const tz = await db.getTimezone(userId);
+    const date = localDate(tz);
+    const r1 = (v) => Math.round(v * 10) / 10;
+    const entries = items.map((it) => {
+      const t = itemTotals(it);
+      return { name: it.name, grams: it.grams, kcal: Math.round(t.kcal), protein: r1(t.protein), fat: r1(t.fat), carbs: r1(t.carbs) };
+    });
+    await db.addEntries(userId, date, meal, entries, "chat");
+    await db.deletePending(userId, pendingId);
+
+    const added = entries.reduce((s, e) => s + e.kcal, 0);
+    const profile = await db.getProfile(userId);
+    const eaten = await db.sumKcal(userId, date);
+    let tail = "";
+    if (profile?.result?.kcal) {
+      const rest = profile.result.kcal - eaten;
+      tail = rest >= 0
+        ? `\nОсталось на сегодня: ${fmtNum(rest)} ккал`
+        : `\nСегодня уже ${fmtNum(-rest)} ккал сверх нормы`;
+    }
+    await ctx.answerCallbackQuery({ text: "Добавлено ✅" });
+    await ctx.editMessageText(
+      `✅ Добавлено в «${MEAL_NAMES[meal]}»: ${fmtNum(added)} ккал\n` +
+        entries.map((e) => `• ${e.name} — ${fmtNum(e.grams)} г`).join("\n") + tail,
+      { reply_markup: WEBAPP_URL ? openAppKeyboard() : undefined }
+    );
+  } catch (e) {
+    console.error("add from chat:", e);
+    await ctx.answerCallbackQuery({ text: "Не получилось, попробуй ещё раз" }).catch(() => {});
+  }
+});
+
+bot.callbackQuery(/^cancel:(\d+)$/, async (ctx) => {
+  try {
+    await db.deletePending(ctx.from.id, ctx.match[1]);
+    await ctx.answerCallbackQuery({ text: "Не добавляю" });
+    await ctx.editMessageText("Окей, не добавляю в дневник.");
+  } catch (e) {
+    await ctx.answerCallbackQuery().catch(() => {});
+  }
+});
 
 // Проверка перед оплатой: Telegram ждёт ответ до 10 секунд
 bot.on("pre_checkout_query", async (ctx) => {

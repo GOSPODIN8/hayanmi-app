@@ -76,6 +76,7 @@
       headers: {
         "Content-Type": "application/json",
         "X-Init-Data": tg?.initData || "",
+        "X-Timezone": (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch (e) { return ""; } })(),
       },
       body: options.body ? JSON.stringify(options.body) : undefined,
     });
@@ -805,7 +806,7 @@
   }
 
   // ---------- Фото: результат с ползунками ----------
-  function renderRecognized(dataUrl, aiItems) {
+  function renderRecognized(dataUrl, aiItems, pendingId) {
     const items = aiItems.map((it) => ({ ...it, grams: Math.round(it.grams) }));
     let meal = defaultMeal();
 
@@ -824,7 +825,9 @@
       }, { kcal: 0, p: 0, f: 0, c: 0 });
 
       app.innerHTML = `
-        <img class="photo small" src="${dataUrl}" alt="Фото еды">
+        ${dataUrl
+          ? `<img class="photo small" src="${dataUrl}" alt="Фото еды">`
+          : `<h2 class="q-title display" style="font-size:22px;margin:4px 0 0">Распознано в чате</h2>`}
         <div class="chips" role="group" aria-label="Приём пищи">
           ${MEALS.map((m) => `<button class="chip ${m.id === meal ? "on" : ""}" type="button" data-meal="${m.id}" aria-pressed="${m.id === meal}">${m.t}</button>`).join("")}
         </div>
@@ -885,7 +888,7 @@
           return { name: it.name, grams: it.grams, kcal: Math.round(c.kcal), protein: r1(c.protein), fat: r1(c.fat), carbs: r1(c.carbs) };
         });
         try {
-          const data = await api("/entries", { method: "POST", body: { date: state.date, meal, items: payload } });
+          const data = await api("/entries", { method: "POST", body: { date: state.date, meal, items: payload, pendingId } });
           state.entries = data.entries;
           haptic("success");
           renderHome();
@@ -940,6 +943,18 @@
           await api("/profile", { method: "POST", body: { profile: saved } });
           state.profile = saved;
         } catch (e) { /* не страшно — пользователь пройдёт анкету заново */ }
+      }
+    }
+
+    // Открыли из чата кнопкой «Изменить граммы»
+    const pendingId = new URLSearchParams(location.search).get("pending");
+    if (state.profile && pendingId && /^\d+$/.test(pendingId)) {
+      history.replaceState(null, "", location.pathname); // чтобы при обновлении не открылось снова
+      try {
+        const data = await api("/pending/" + pendingId);
+        return renderRecognized(null, data.items, pendingId);
+      } catch (e) {
+        showAlert("Эта запись уже добавлена или устарела.");
       }
     }
 
