@@ -343,3 +343,54 @@ button { font-family: inherit; cursor: pointer; }
 .admin-grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .admin-grid .stat .v { font-size: 22px; margin: 4px 0; }
 .entry.pay { width: 100%; text-align: left; border: none; color: var(--text); font-family: inherit; padding-right: 16px; }
+
+/* ---- Панель «Добавить еду» (bottom sheet в стиле Apple) ---- */
+.sheet-bg { position: fixed; inset: 0; z-index: 30; background: rgba(0, 0, 0, 0.5); animation: sh-fade .25s ease both; }
+.sheet {
+  position: fixed; z-index: 31; left: 8px; right: 8px; margin: 0 auto; max-width: 520px;
+  bottom: calc(8px + max(env(safe-area-inset-bottom, 0px), var(--tg-safe-area-inset-bottom, 0px)));
+  padding: 8px 12px 14px; border-radius: 32px;
+  background: rgba(34, 36, 40, 0.82); -webkit-backdrop-filter: blur(24px) saturate(180%); backdrop-filter: blur(24px) saturate(180%);
+  border: 0.5px solid rgba(255, 255, 255, 0.14); box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+  animation: sh-up .38s cubic-bezier(.2, .9, .25, 1) both;
+}
+#sheet-root.closing .sheet { animation: sh-down .2s ease-in forwards; }
+#sheet-root.closing .sheet-bg { animation: sh-fade-out .2s ease forwards; }
+.sheet-handle { width: 40px; height: 5px; border-radius: 3px; background: rgba(255, 255, 255, 0.25); margin: 2px auto 10px; }
+.sheet-title { text-align: center; font: 600 15px -apple-system, BlinkMacSystemFont, "SF Pro Text", Manrope, sans-serif; color: var(--muted); margin-bottom: 8px; }
+.sheet-item { width: 100%; display: flex; align-items: center; gap: 14px; padding: 12px; border: none; border-radius: 20px; background: transparent; color: var(--text); text-align: left; font-family: inherit; }
+.sheet-item:active { background: rgba(255, 255, 255, 0.08); }
+.sh-ic { width: 46px; height: 46px; border-radius: 14px; background: rgba(212, 242, 90, 0.14); color: var(--accent); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.sh-tx { display: flex; flex-direction: column; gap: 2px; }
+.sh-tx strong { font-size: 16px; }
+.sh-tx small { font-size: 13px; color: var(--muted); }
+@keyframes sh-up { from { transform: translateY(110%); } to { transform: none; } }
+@keyframes sh-down { to { transform: translateY(110%); } }
+@keyframes sh-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes sh-fade-out { to { opacity: 0; } }
+
+/* ---- Поиск продуктов ---- */
+.search-bar { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 10px; height: 50px; padding: 0 16px; margin-bottom: 8px;
+  border-radius: 25px; background: var(--card); border: 1px solid var(--line); color: var(--muted); }
+.search-bar:focus-within { border-color: var(--accent); }
+.search-bar input { flex: 1; min-width: 0; border: none; outline: none; background: transparent; color: var(--text); font: 500 16px Manrope, "Segoe UI", sans-serif; }
+.search-bar input::-webkit-search-cancel-button { filter: invert(0.7); }
+.food-row { width: 100%; display: flex; align-items: center; gap: 12px; padding: 12px 14px; margin-bottom: 6px; border: none; border-radius: 16px; background: var(--card); color: var(--text); text-align: left; font-family: inherit; }
+.food-row:active { transform: scale(0.99); }
+.fr-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.fr-name { font-size: 15px; font-weight: 600; }
+.fr-meta { font-size: 12px; color: var(--muted); }
+.fr-add { width: 32px; height: 32px; border-radius: 16px; background: var(--card2); color: var(--accent); font-size: 20px; font-weight: 600; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.food-row.ai { border: 1px dashed rgba(212, 242, 90, 0.45); background: rgba(212, 242, 90, 0.06); margin-top: 8px; }
+.fr-ic { color: var(--accent); display: flex; }
+.text-input.area { height: auto; min-height: 110px; padding: 14px 16px; line-height: 1.45; resize: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .sheet, .sheet-bg, #sheet-root.closing .sheet, #sheet-root.closing .sheet-bg { animation: none !important; }
+}
+
+/* ---- Ссылки на условия, удаление данных ---- */
+.inline-link { background: none; border: none; padding: 0; color: var(--accent); font: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.consent { text-align: center; margin: 12px 8px 0; line-height: 1.5; }
+.profile-links { display: flex; flex-direction: column; margin-top: 14px; }
+.link-btn.danger { color: var(--danger); }

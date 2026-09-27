@@ -589,3 +589,27 @@ export async function adminGrant(userId, days) {
     [userId, days]
   );
 }
+
+// Недавние продукты пользователя: уникальные названия за 30 дней, с КБЖУ на 100 г
+export async function recentFoods(userId, limit = 20) {
+  const { rows } = await pool.query(
+    `SELECT DISTINCT ON (lower(name)) name, grams, kcal, protein, fat, carbs, created_at
+     FROM food_entries
+     WHERE user_id = $1 AND created_at > now() - interval '30 days' AND grams > 0
+     ORDER BY lower(name), created_at DESC`,
+    [userId]
+  );
+  return rows
+    .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+    .slice(0, limit)
+    .map((r) => {
+      const k = 100 / r.grams;
+      const r1 = (v) => Math.round(v * k * 10) / 10;
+      return { n: r.name, g: Math.round(r.grams), k: Math.round(r.kcal * k), p: r1(r.protein), f: r1(r.fat), c: r1(r.carbs) };
+    });
+}
+
+// Удаляет пользователя и всё, что с ним связано (таблицы связаны через ON DELETE CASCADE)
+export async function deleteUser(userId) {
+  await pool.query(`DELETE FROM users WHERE telegram_id = $1`, [userId]);
+}

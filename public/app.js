@@ -100,6 +100,13 @@
     if (tg?.showAlert) tg.showAlert(msg); else alert(msg);
   }
 
+  // Условия и политика конфиденциальности — открываются во встроенном браузере Telegram
+  function openLegal() {
+    const url = location.origin + "/legal";
+    try { if (tg?.openLink) return tg.openLink(url); } catch (e) {}
+    window.open(url, "_blank");
+  }
+
   function showConfirm(msg) {
     return new Promise((resolve) => {
       if (tg?.showConfirm) tg.showConfirm(msg, (ok) => resolve(!!ok));
@@ -129,6 +136,12 @@
     age:    { min: 14, max: 90,  step: 1,   tickW: 14, major: 5,  label: 5,  decimals: 0 },
     height: { min: 130, max: 230, step: 1,  tickW: 10, major: 10, label: 10, decimals: 0 },
     weight: { min: 35, max: 250, step: 0.1, tickW: 8,  major: 10, label: 10, decimals: 1 },
+    grams:  { min: 0,  max: 1500, step: 5,  tickW: 8,  major: 10, label: 20, decimals: 0 },
+  };
+  // Индекс первого деления, кратного «круглому» значению (чтобы подписи были 15, 20, 25, а не 14, 19, 24)
+  const firstAligned = (c, every) => {
+    const val = every * c.step;
+    return Math.round((Math.ceil(c.min / val - 1e-9) * val - c.min) / c.step);
   };
 
   const numText = (v, decimals) => decimals ? v.toFixed(decimals).replace(".", ",") : String(Math.round(v));
@@ -138,7 +151,8 @@
     const ticks = Math.round((c.max - c.min) / c.step);
     const width = ticks * c.tickW;
     const labels = [];
-    for (let i = 0; i <= ticks; i += c.label) {
+    const majorShift = firstAligned(c, c.major) * c.tickW;
+    for (let i = firstAligned(c, c.label); i <= ticks; i += c.label) {
       labels.push(`<span class="rl-num" style="left:${i * c.tickW}px">${numText(c.min + i * c.step, 0)}</span>`);
     }
     return `
@@ -156,7 +170,7 @@
                   repeating-linear-gradient(90deg, rgba(243,241,234,.9) 0 2px, transparent 2px ${c.tickW * c.major}px),
                   repeating-linear-gradient(90deg, rgba(166,165,158,.55) 0 1px, transparent 1px ${c.tickW}px);
                 background-size: 100% 40px, 100% 20px;
-                background-position: 0 0, 0 10px;
+                background-position: ${majorShift}px 0, 0 10px;
                 background-repeat: no-repeat;"></div>
               ${labels.join("")}
             </div>
@@ -861,8 +875,14 @@
       ${state.homeScreen && state.homeScreen !== "unsupported"
         ? `<button class="secondary" id="hs-profile" type="button" style="margin-top:10px" ${state.homeScreen === "added" ? "disabled" : ""}>${state.homeScreen === "added" ? "Hayanmi уже на главном экране" : "Добавить на главный экран"}</button>`
         : ""}
+      <div class="profile-links">
+        <button class="link-btn" id="legal-btn" type="button">Условия и конфиденциальность</button>
+        <button class="link-btn danger" id="delete-btn" type="button">Удалить мои данные</button>
+      </div>
       ${tabbarHtml("")}`;
     bindTabs();
+    document.getElementById("legal-btn").addEventListener("click", openLegal);
+    document.getElementById("delete-btn").addEventListener("click", deleteAccount);
     const adminBtn = document.getElementById("admin-btn");
     if (adminBtn) adminBtn.addEventListener("click", () => { haptic(); renderAdmin(); });
     const hsP = document.getElementById("hs-profile");
@@ -1091,6 +1111,28 @@
     });
   }
 
+  // ---------- Удаление всех данных ----------
+  async function deleteAccount() {
+    haptic();
+    const ok = await showConfirm("Удалить все твои данные в Hayanmi? Дневник, вес, переписка с коучем и настройки будут стёрты навсегда. Автопродление подписки отключится.");
+    if (!ok) return;
+    try {
+      await api("/account", { method: "DELETE" });
+    } catch (e) {
+      return showAlert("Не получилось удалить. Попробуйте ещё раз или напишите /paysupport в боте.");
+    }
+    for (const k of ["profile", "intro_seen", "paywall_last", "hs_dismissed"]) storage.set(k, "");
+    haptic("success");
+    setBack(null);
+    app.innerHTML = `
+      <div style="margin-top:24px">${LOGO}</div>
+      <h2 class="q-title display" style="margin-top:18px">Данные удалены</h2>
+      <p class="q-sub">Мы стёрли всё, что хранили о тебе. Если захочешь вернуться — просто открой Hayanmi снова.</p>
+      <div class="grow"></div>
+      <button class="primary" id="bye" type="button">Закрыть</button>`;
+    document.getElementById("bye").addEventListener("click", () => { try { tg?.close(); } catch (e) {} });
+  }
+
   // ---------- Премиум: показ пейволла время от времени ----------
   const PAYWALL_EVERY_DAYS = 3;
 
@@ -1167,7 +1209,7 @@
           <button class="primary" id="buy" type="button">Оформить за ${fmt(plan === "year" ? prices.year : prices.month)} Stars</button>
           ${trial ? `<button class="secondary" id="trial" type="button">Попробовать ${prices.trialDays} дня бесплатно</button>` : ""}
           <button class="link-btn" id="later" type="button">Не сейчас</button>
-          <div class="small muted" style="text-align:center">Условия — команда /terms в чате с ботом · помощь — /paysupport</div>
+          <div class="small muted" style="text-align:center"><button class="inline-link" id="pw-legal" type="button">Условия и конфиденциальность</button> · помощь — /paysupport в боте</div>
         </div>
         </div>`;
       first = false;
@@ -1179,6 +1221,7 @@
       if (trial) document.getElementById("trial").addEventListener("click", startTrial);
       document.getElementById("close").addEventListener("click", close);
       document.getElementById("later").addEventListener("click", close);
+      document.getElementById("pw-legal").addEventListener("click", openLegal);
     }
 
     draw();
@@ -1303,7 +1346,7 @@
   }
 
   // ---------- Фото: результат с ползунками ----------
-  function renderRecognized(dataUrl, aiItems, pendingId) {
+  function renderRecognized(dataUrl, aiItems, pendingId, title, source) {
     const items = aiItems.map((it) => ({ ...it, grams: Math.round(it.grams) }));
     let meal = defaultMeal();
 
@@ -1324,7 +1367,7 @@
       app.innerHTML = `
         ${dataUrl
           ? `<img class="photo small" src="${dataUrl}" alt="Фото еды">`
-          : `<h2 class="q-title display" style="font-size:22px;margin:4px 0 0">Распознано в чате</h2>`}
+          : `<h2 class="q-title display" style="font-size:22px;margin:4px 0 0">${esc(title || "Распознано в чате")}</h2>`}
         <div class="chips" role="group" aria-label="Приём пищи">
           ${MEALS.map((m) => `<button class="chip ${m.id === meal ? "on" : ""}" type="button" data-meal="${m.id}" aria-pressed="${m.id === meal}">${m.t}</button>`).join("")}
         </div>
@@ -1385,7 +1428,7 @@
           return { name: it.name, grams: it.grams, kcal: Math.round(c.kcal), protein: r1(c.protein), fat: r1(c.fat), carbs: r1(c.carbs) };
         });
         try {
-          const data = await api("/entries", { method: "POST", body: { date: state.date, meal, items: payload, pendingId } });
+          const data = await api("/entries", { method: "POST", body: { date: state.date, meal, items: payload, pendingId, source: source || "photo" } });
           state.entries = data.entries;
           haptic("success");
           renderHome();
@@ -1455,12 +1498,7 @@
       })
     );
     const fileInput = document.getElementById("file");
-    document.getElementById("tab-plus").addEventListener("click", () => {
-      haptic();
-      const q = state.quota;
-      if (q && !q.unlimited && q.left <= 0) return renderPaywall("limit");
-      fileInput.click();
-    });
+    document.getElementById("tab-plus").addEventListener("click", () => { haptic(); openAddSheet(); });
     fileInput.addEventListener("change", async () => {
       const file = fileInput.files && fileInput.files[0];
       if (!file) return;
@@ -1552,6 +1590,7 @@
           <div class="dots" aria-hidden="true">${INTRO.map((_, k) => `<span class="${k === i ? "on" : ""}"></span>`).join("")}</div>
           <div class="grow"></div>
           <button class="primary" id="next" type="button">${last ? "Начать" : "Далее"}</button>
+          ${last ? `<p class="small muted consent">Нажимая «Начать», вы принимаете <button class="inline-link" id="legal" type="button">условия и политику конфиденциальности</button></p>` : ""}
         </div>`;
 
       const next = () => { haptic("select"); if (last) finish(); else { i++; draw(); } };
@@ -1559,6 +1598,8 @@
       document.getElementById("next").addEventListener("click", next);
       const skip = document.getElementById("skip");
       if (skip) skip.addEventListener("click", () => { haptic(); finish(); });
+      const legal = document.getElementById("legal");
+      if (legal) legal.addEventListener("click", openLegal);
 
       // Листание свайпом
       const box = document.getElementById("intro");
@@ -1775,6 +1816,326 @@
       renderStep();
     });
     document.getElementById("later").addEventListener("click", () => renderProgress());
+  }
+
+  // ---------- Меню «+»: выезжающая снизу панель в стиле Apple ----------
+  const SHEET_ICONS = {
+    photo: `<svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8.5A1.5 1.5 0 0 1 5.5 7H7.5L9 5H15L16.5 7H18.5A1.5 1.5 0 0 1 20 8.5V18A1.5 1.5 0 0 1 18.5 19.5H5.5A1.5 1.5 0 0 1 4 18Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="12" cy="13" r="3.5" fill="none" stroke="currentColor" stroke-width="2"/></svg>`,
+    search: `<svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M16 16L20 20" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`,
+    text: `<svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6H19M5 11H19M5 16H13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M17.5 14L18.3 16.2L20.5 17L18.3 17.8L17.5 20L16.7 17.8L14.5 17L16.7 16.2Z" fill="currentColor"/></svg>`,
+  };
+  const SPARK = `<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3L13.8 9.2L20 11L13.8 12.8L12 19L10.2 12.8L4 11L10.2 9.2Z" fill="currentColor"/></svg>`;
+
+  function sheetRoot() {
+    let root = document.getElementById("sheet-root");
+    if (!root && document.body && document.body.appendChild) {
+      root = document.createElement("div");
+      root.id = "sheet-root";
+      document.body.appendChild(root);
+    }
+    return root;
+  }
+
+  function closeSheet(then) {
+    const root = sheetRoot();
+    const sheet = document.getElementById("sheet");
+    if (!root || !sheet) { if (then) then(); return; }
+    root.classList && root.classList.add("closing");
+    setTimeout(() => {
+      root.innerHTML = "";
+      root.classList && root.classList.remove && root.classList.remove("closing");
+      if (then) then();
+    }, reduceMotion() ? 0 : 200);
+  }
+
+  function openAddSheet() {
+    const root = sheetRoot();
+    if (!root) return;
+    const q = state.quota;
+    const noAi = q && !q.unlimited && q.left <= 0;
+    root.innerHTML = `
+      <div class="sheet-bg" id="sheet-bg"></div>
+      <div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-label="Добавить еду">
+        <div class="sheet-handle" aria-hidden="true"></div>
+        <div class="sheet-title">Добавить еду</div>
+        <button class="sheet-item" id="sh-photo" type="button">
+          <span class="sh-ic">${SHEET_ICONS.photo}</span>
+          <span class="sh-tx"><strong>Сфотографировать</strong><small>ИИ распознает блюда и граммы</small></span>
+        </button>
+        <button class="sheet-item" id="sh-search" type="button">
+          <span class="sh-ic">${SHEET_ICONS.search}</span>
+          <span class="sh-tx"><strong>Найти продукт</strong><small>База продуктов и недавние</small></span>
+        </button>
+        <button class="sheet-item" id="sh-text" type="button">
+          <span class="sh-ic">${SHEET_ICONS.text}</span>
+          <span class="sh-tx"><strong>Описать словами</strong><small>«Две самсы и чай с сахаром»</small></span>
+        </button>
+        ${noAi ? `<div class="small muted" style="text-align:center;margin-top:10px">Фото и описание — в Премиуме. Поиск продуктов — бесплатно.</div>` : ""}
+      </div>`;
+
+    setBack(() => closeSheet(() => setBack(null)));
+    const done = () => setBack(null);
+    document.getElementById("sheet-bg").addEventListener("click", () => closeSheet(done));
+    document.getElementById("sh-photo").addEventListener("click", () => {
+      haptic();
+      if (noAi) return closeSheet(() => renderPaywall("limit"));
+      // Выбор файла должен идти прямо из нажатия — открываем до закрытия панели
+      const fileInput = document.getElementById("file");
+      if (fileInput) fileInput.click();
+      closeSheet(done);
+    });
+    document.getElementById("sh-search").addEventListener("click", () => { haptic(); closeSheet(() => renderSearch()); });
+    document.getElementById("sh-text").addEventListener("click", () => {
+      haptic();
+      closeSheet(() => (noAi ? renderPaywall("limit") : renderDescribe()));
+    });
+  }
+
+  // ---------- Поиск продуктов ----------
+  let foodsDb = null;
+  let recentCache = null;
+  const norm = (t) => String(t).toLowerCase().replace(/ё/g, "е").replace(/[«»"().,]/g, " ").replace(/\s+/g, " ").trim();
+
+  async function loadFoods() {
+    if (!foodsDb) {
+      const res = await fetch("/foods.json");
+      foodsDb = (await res.json()).map((f) => ({ ...f, _n: norm(f.n) }));
+    }
+    return foodsDb;
+  }
+
+  function searchFoods(list, query) {
+    const q = norm(query);
+    if (!q) return [];
+    const words = q.split(" ");
+    return list
+      .filter((f) => words.every((w) => f._n.includes(w)))
+      .map((f) => ({
+        f,
+        score: (f._n.startsWith(q) ? 0 : f._n.split(" ").some((w) => w.startsWith(words[0])) ? 1 : 2) * 1000 + f._n.length,
+      }))
+      .sort((a, b) => a.score - b.score)
+      .slice(0, 30)
+      .map((x) => x.f);
+  }
+
+  const per100 = (f) => `${fmt(f.k)} ккал · Б ${fmt(f.p)} · Ж ${fmt(f.f)} · У ${fmt(f.c)} на 100 г`;
+
+  async function renderSearch(initial) {
+    setBack(() => renderHome());
+    app.innerHTML = `
+      <div class="search-bar">
+        ${SHEET_ICONS.search}
+        <label for="sq" class="sr-only">Поиск продукта</label>
+        <input id="sq" type="search" autocomplete="off" enterkeyhint="search" placeholder="Продукт или блюдо" value="${esc(initial || "")}">
+      </div>
+      <div id="sr"><div class="loading"><div class="spinner" aria-label="Загрузка"></div></div></div>`;
+
+    const input = document.getElementById("sq");
+    const box = document.getElementById("sr");
+    setTimeout(() => input.focus && input.focus(), 250);
+
+    let list;
+    try {
+      [list, recentCache] = await Promise.all([
+        loadFoods(),
+        recentCache ? Promise.resolve(recentCache) : api("/recent").then((d) => d.items).catch(() => []),
+      ]);
+    } catch (e) {
+      box.innerHTML = `<section class="card empty"><p class="note muted" style="margin:0">Не получилось загрузить базу продуктов.</p></section>`;
+      return;
+    }
+
+    const draw = () => {
+      const q = input.value.trim();
+      let html = "";
+      if (!q) {
+        html = recentCache.length
+          ? `<div class="section-title"><span>Недавние</span></div>` + recentCache.map((f, i) => `
+              <button class="food-row" type="button" data-recent="${i}">
+                <span class="fr-main"><span class="fr-name">${esc(f.n)}</span><span class="fr-meta">${fmt(f.g)} г · ${fmt(f.k * f.g / 100)} ккал</span></span>
+                <span class="fr-add" aria-hidden="true">+</span>
+              </button>`).join("")
+          : `<p class="note muted" style="text-align:center;margin-top:24px">Начни вводить название: «гречка», «самса», «латте»…</p>`;
+      } else {
+        const found = searchFoods(list, q);
+        html = found.map((f) => `
+          <button class="food-row" type="button" data-food="${esc(f.n)}">
+            <span class="fr-main"><span class="fr-name">${esc(f.n)}</span><span class="fr-meta">${per100(f)}</span></span>
+            <span class="fr-add" aria-hidden="true">+</span>
+          </button>`).join("");
+        if (!found.length) html += `<p class="note muted" style="margin:14px 2px">В базе такого нет — посчитаем через ИИ.</p>`;
+        if (q.length >= 2) {
+          html += `
+            <button class="food-row ai" type="button" id="ai-row">
+              <span class="fr-ic">${SPARK}</span>
+              <span class="fr-main"><span class="fr-name">Посчитать «${esc(q)}» через ИИ</span><span class="fr-meta">Разложит на продукты и граммы</span></span>
+            </button>`;
+        }
+      }
+      box.innerHTML = html;
+
+      const rows = box.querySelectorAll ? box.querySelectorAll("[data-food], [data-recent]") : [];
+      rows.forEach((b) => b.addEventListener("click", () => {
+        haptic();
+        if (b.dataset.recent != null) {
+          const r = recentCache[Number(b.dataset.recent)];
+          return renderPortion({ n: r.n, k: r.k, p: r.p, f: r.f, c: r.c, u: [] }, r.g, () => renderSearch(input.value));
+        }
+        const f = list.find((x) => x.n === b.dataset.food);
+        renderPortion(f, null, () => renderSearch(input.value));
+      }));
+      const ai = document.getElementById("ai-row");
+      if (ai) ai.addEventListener("click", () => {
+        haptic();
+        const q2 = input.value.trim();
+        const quota = state.quota;
+        if (quota && !quota.unlimited && quota.left <= 0) return renderPaywall("limit");
+        describe(q2, () => renderSearch(q2));
+      });
+    };
+
+    input.addEventListener("input", draw);
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter" && input.blur) input.blur(); });
+    draw();
+  }
+
+  // ---------- Выбор порции шкалой ----------
+  function renderPortion(food, grams, onBack) {
+    setBack(onBack || (() => renderHome()));
+    const portions = [...(food.u || []), ["100 г", 100]];
+    const start = grams || (food.u && food.u[0] ? food.u[0][1] : 100);
+    let meal = defaultMeal();
+    let g = start;
+
+    const calc = (gr) => ({
+      kcal: food.k * gr / 100, p: food.p * gr / 100, f: food.f * gr / 100, c: food.c * gr / 100,
+    });
+    const t = calc(g);
+
+    app.innerHTML = `
+      <h2 class="q-title display" style="font-size:24px;margin:4px 0 4px">${esc(food.n)}</h2>
+      <p class="q-sub" style="margin-bottom:6px">${per100(food)}</p>
+      ${rulerHtml("grams", g, "г", "Вес порции в граммах")}
+      <div class="chips" role="group" aria-label="Быстрые порции" style="justify-content:center;flex-wrap:wrap;overflow:visible">
+        ${portions.map(([label, pg]) => `<button class="chip small" type="button" data-grams="${pg}">${esc(label)}${label.endsWith(" г") ? "" : ` · ${pg} г`}</button>`).join("")}
+      </div>
+      <div class="totals">
+        <div><div class="v display" style="color:var(--accent)" id="pt-k">${fmt(t.kcal)}</div><div class="k muted">ккал</div></div>
+        <div><div class="v" id="pt-p">${fmt(t.p)} г</div><div class="k" style="color:var(--protein)">Белки</div></div>
+        <div><div class="v" id="pt-f">${fmt(t.f)} г</div><div class="k" style="color:var(--fat)">Жиры</div></div>
+        <div><div class="v" id="pt-c">${fmt(t.c)} г</div><div class="k" style="color:var(--carbs)">Углеводы</div></div>
+      </div>
+      <div class="chips" role="group" aria-label="Приём пищи">
+        ${MEALS.map((m) => `<button class="chip ${m.id === meal ? "on" : ""}" type="button" data-meal="${m.id}" aria-pressed="${m.id === meal}">${m.t}</button>`).join("")}
+      </div>
+      <div class="grow"></div>
+      <button class="primary" id="add-food" type="button">Добавить в дневник</button>`;
+
+    const update = (v) => {
+      g = v;
+      const x = calc(v);
+      document.getElementById("pt-k").textContent = fmt(x.kcal);
+      document.getElementById("pt-p").textContent = fmt(x.p) + " г";
+      document.getElementById("pt-f").textContent = fmt(x.f) + " г";
+      document.getElementById("pt-c").textContent = fmt(x.c) + " г";
+      const btn = document.getElementById("add-food");
+      btn.disabled = !(v > 0);
+    };
+    const ruler = mountRuler("grams", g, update);
+
+    app.querySelectorAll("[data-grams]").forEach((b) => b.addEventListener("click", () => {
+      haptic("select");
+      const v = Number(b.dataset.grams);
+      ruler.set(v);
+      update(v);
+    }));
+    app.querySelectorAll("[data-meal]").forEach((b) => b.addEventListener("click", () => {
+      haptic("select");
+      meal = b.dataset.meal;
+      app.querySelectorAll("[data-meal]").forEach((x) => {
+        const on = x.dataset.meal === meal;
+        x.className = "chip" + (on ? " on" : "");
+        if (x.setAttribute) x.setAttribute("aria-pressed", String(on));
+      });
+    }));
+
+    const addBtn = document.getElementById("add-food");
+    addBtn.addEventListener("click", async () => {
+      const typed = parseFloat(String(document.getElementById("num").value).replace(",", "."));
+      if (isFinite(typed) && typed > 0 && typed <= 5000) g = Math.round(typed);
+      if (!(g > 0)) return;
+      const x = calc(g);
+      const r1 = (v) => Math.round(v * 10) / 10;
+      addBtn.disabled = true;
+      addBtn.textContent = "Добавляю…";
+      try {
+        const data = await api("/entries", {
+          method: "POST",
+          body: { date: state.date, meal, source: "search",
+            items: [{ name: food.n, grams: g, kcal: Math.round(x.kcal), protein: r1(x.p), fat: r1(x.f), carbs: r1(x.c) }] },
+        });
+        state.entries = data.entries;
+        recentCache = null; // обновим «Недавние» при следующем поиске
+        haptic("success");
+        renderHome();
+      } catch (e) {
+        haptic("error");
+        addBtn.disabled = false;
+        addBtn.textContent = "Добавить в дневник";
+        showAlert("Не получилось добавить. Попробуйте ещё раз.");
+      }
+    });
+  }
+
+  // ---------- Описать словами ----------
+  function renderDescribe(prefill) {
+    setBack(() => renderHome());
+    app.innerHTML = `
+      <h2 class="q-title display" style="margin-top:4px">Что ты съел?</h2>
+      <p class="q-sub">Опиши своими словами — ИИ разложит на продукты и посчитает калории.</p>
+      <label for="desc" class="sr-only">Описание еды</label>
+      <textarea class="text-input area" id="desc" maxlength="300" rows="4" placeholder="Например: две самсы с мясом и чай с двумя ложками сахара">${esc(prefill || "")}</textarea>
+      <div class="chips" style="flex-wrap:wrap;overflow:visible">
+        ${["Тарелка плова и лепёшка", "Капучино и круассан", "Шаурма и кола 0,5"].map((x) => `<button class="chip small" type="button" data-ex="${esc(x)}">${esc(x)}</button>`).join("")}
+      </div>
+      <div class="grow"></div>
+      <button class="primary" id="go" type="button">Посчитать</button>`;
+
+    const area = document.getElementById("desc");
+    setTimeout(() => area.focus && area.focus(), 250);
+    app.querySelectorAll("[data-ex]").forEach((b) => b.addEventListener("click", () => { haptic("select"); area.value = b.dataset.ex; }));
+    document.getElementById("go").addEventListener("click", () => {
+      const text = area.value.trim();
+      if (text.length < 2) { haptic("error"); return; }
+      describe(text, () => renderDescribe(text));
+    });
+  }
+
+  async function describe(text, onBack) {
+    setBack(null);
+    app.innerHTML = `
+      <div class="loading" style="margin-top:28vh">
+        <div class="spinner" aria-hidden="true"></div>
+        <div>Считаю калории…</div>
+        <div class="small muted">«${esc(text)}»</div>
+      </div>`;
+    try {
+      const data = await api("/describe", { method: "POST", body: { text } });
+      if (data.quota) state.quota = data.quota;
+      if (!data.isFood) {
+        haptic("error");
+        showAlert("Не нашёл в описании еды. Попробуйте написать иначе — например, «тарелка борща и хлеб».");
+        return onBack();
+      }
+      haptic("success");
+      renderRecognized(null, data.items, null, "По описанию", "text");
+    } catch (e) {
+      haptic("error");
+      if (e.code === "limit") { if (e.data?.quota) state.quota = e.data.quota; return renderPaywall("limit"); }
+      showAlert("Не получилось посчитать. Попробуйте ещё раз через минуту.");
+      onBack();
+    }
   }
 
   // ---------- ИИ-коуч ----------

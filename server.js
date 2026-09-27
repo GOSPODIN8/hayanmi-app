@@ -1,11 +1,12 @@
 // Hayanmi — сервер: бот в Telegram + Mini App + API.
 import crypto from "node:crypto";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { Bot, InlineKeyboard } from "grammy";
 import * as db from "./db.js";
-import { recognizeFood, suggestRecipe, hasGemini } from "./gemini.js";
+import { recognizeFood, recognizeText, suggestRecipe, hasGemini } from "./gemini.js";
 import { PERSONAS, DEFAULT_PERSONA, coachAccess, coachReply } from "./coach.js";
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -138,6 +139,24 @@ const app = express();
 app.use(express.json({ limit: "8mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
+// Условия и политика конфиденциальности (данные оператора — из переменных Railway)
+const OPERATOR_NAME = process.env.OPERATOR_NAME || "[укажите имя или название организации в переменной OPERATOR_NAME]";
+const LEGAL_DATE = process.env.LEGAL_DATE || "27 сентября 2026";
+app.get("/legal", (_req, res) => {
+  try {
+    const html = fs.readFileSync(path.join(__dirname, "legal", "legal.html"), "utf8")
+      .replaceAll("{{OPERATOR}}", OPERATOR_NAME.replace(/[<>]/g, ""))
+      .replaceAll("{{CONTACT}}", (SUPPORT_CONTACT || "команда /paysupport в боте").replace(/[<>]/g, ""))
+      .replaceAll("{{DATE}}", LEGAL_DATE.replace(/[<>]/g, ""))
+      .replaceAll("{{PRICE_MONTH}}", String(PLANS.month.price))
+      .replaceAll("{{PRICE_YEAR}}", String(PLANS.year.price))
+      .replaceAll("{{COACH_DAILY}}", String(process.env.COACH_DAILY_LIMIT ?? 50));
+    res.type("html").send(html);
+  } catch (e) {
+    res.status(500).send("Страница временно недоступна");
+  }
+});
+
 app.get("/health", (_req, res) => res.json({ ok: true, db: db.hasDb(), ai: hasGemini() }));
 
 app.post("/api/me", (req, res) => {
@@ -241,6 +260,33 @@ api.post("/recognize", async (req, res) => {
   }
 });
 
+// Недавние продукты — для быстрого повтора в поиске
+api.get("/recent", async (req, res) => {
+  try {
+    res.json({ ok: true, items: await db.recentFoods(req.user.id) });
+  } catch (e) {
+    console.error("recent:", e);
+    res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
+// Еда по текстовому описанию — тратит одно распознавание, как фото
+api.post("/describe", async (req, res) => {
+  if (!hasGemini()) return res.status(503).json({ ok: false, error: "no_ai" });
+  const text = typeof req.body?.text === "string" ? req.body.text.trim() : "";
+  if (text.length < 2 || text.length > 300) return res.status(400).json({ ok: false, error: "bad_text" });
+  try {
+    const quota = await photoQuota(req.user.id);
+    if (!quota.unlimited && quota.left <= 0) return res.status(402).json({ ok: false, error: "limit", quota });
+    const result = await recognizeText(text);
+    if (result.isFood) await db.addUsage(req.user.id, "photo");
+    res.json({ ok: true, ...result, quota: await photoQuota(req.user.id) });
+  } catch (e) {
+    console.error("describe:", e);
+    res.status(502).json({ ok: false, error: "ai_error" });
+  }
+});
+
 api.post("/entries", async (req, res) => {
   const { date, meal, items, pendingId } = req.body || {};
   if (!isDate(date) || !MEALS.has(meal) || !Array.isArray(items) || items.length === 0 || items.length > 20) {
@@ -259,7 +305,7 @@ api.post("/entries", async (req, res) => {
     .filter((it) => it.grams > 0);
   if (clean.length === 0) return res.status(400).json({ ok: false, error: "empty" });
   try {
-    const source = ["photo", "recipe", "ai_recipe"].includes(req.body.source) ? req.body.source : "photo";
+    const source = ["photo", "recipe", "ai_recipe", "search", "text"].includes(req.body.source) ? req.body.source : "photo";
     await db.addEntries(req.user.id, date, meal, clean, source);
     if (typeof pendingId === "string" && /^\d+$/.test(pendingId)) await db.deletePending(req.user.id, pendingId);
     res.json({ ok: true, entries: await db.getEntries(req.user.id, date) });
@@ -478,6 +524,23 @@ api.post("/admin/refund", adminOnly, async (req, res) => {
   } catch (e) {
     console.error("admin refund:", e);
     res.status(500).json({ ok: false, error: "refund_failed", message: e.description || e.message });
+  }
+});
+
+// Удаление всех данных пользователя (право на удаление)
+api.delete("/account", async (req, res) => {
+  try {
+    const prem = await db.getPremium(req.user.id);
+    if (prem.recurring && prem.chargeId && !prem.canceled) {
+      await bot.api.raw
+        .editUserStarSubscription({ user_id: req.user.id, telegram_payment_charge_id: prem.chargeId, is_canceled: true })
+        .catch((e) => console.warn("account delete: cancel sub:", e.description || e));
+    }
+    await db.deleteUser(req.user.id);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("account delete:", e);
+    res.status(500).json({ ok: false, error: "server_error" });
   }
 });
 
@@ -899,7 +962,8 @@ bot.command("terms", (ctx) =>
       `2. Год — ${PLANS.year.price} Stars, разовая оплата на 365 дней, без автопродления.\n` +
       `3. Пробный период — ${TRIAL_DAYS} дня, один раз, без списания.\n` +
       "4. Hayanmi не является медицинским изделием и не заменяет консультацию врача. Расчёты калорий — ориентир.\n" +
-      "5. Вопросы и возвраты — через /paysupport."
+      "5. Вопросы и возвраты — через /paysupport." +
+      (WEBAPP_URL ? `\n\nПолные условия и политика конфиденциальности: ${WEBAPP_URL}/legal` : "")
   )
 );
 
@@ -999,6 +1063,21 @@ async function main() {
   }
 
   app.listen(PORT, () => console.log(`Сервер запущен на порту ${PORT}`));
+
+  // Тексты профиля бота: «О боте» и описание в пустом чате
+  await bot.api.raw.setMyShortDescription({
+    short_description: "ИИ-счётчик калорий: сфоткай еду — узнай КБЖУ. Коуч, рецепты и напоминания прямо в Telegram.",
+  }).catch((e) => console.warn("short description:", e.description || e.message));
+  await bot.api.raw.setMyDescription({
+    description:
+      "Hayanmi считает калории по фото 📸\n\n" +
+      "• Сфоткай тарелку — ИИ определит блюда, граммы, калории и БЖУ\n" +
+      "• Личная норма калорий под твою цель\n" +
+      "• ИИ-коуч, который видит твой дневник\n" +
+      "• Рецепты и ИИ-повар под остаток нормы\n" +
+      "• Напоминания о еде и воде\n\n" +
+      "Нажми «Запустить» — первые распознавания бесплатно.",
+  }).catch((e) => console.warn("description:", e.description || e.message));
 
   await bot.api.setMyCommands([
     { command: "start", description: "Открыть Hayanmi" },
