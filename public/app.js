@@ -123,6 +123,117 @@
     return data;
   }
 
+  // ---------- Шкала-линейка для чисел (возраст, рост, вес) ----------
+  // Листается пальцем, щёлкает на делениях, число сверху можно ввести с клавиатуры.
+  const RULERS = {
+    age:    { min: 14, max: 90,  step: 1,   tickW: 14, major: 5,  label: 5,  decimals: 0 },
+    height: { min: 130, max: 230, step: 1,  tickW: 10, major: 10, label: 10, decimals: 0 },
+    weight: { min: 35, max: 250, step: 0.1, tickW: 8,  major: 10, label: 10, decimals: 1 },
+  };
+
+  const numText = (v, decimals) => decimals ? v.toFixed(decimals).replace(".", ",") : String(Math.round(v));
+
+  function rulerHtml(kind, value, unit, label) {
+    const c = RULERS[kind];
+    const ticks = Math.round((c.max - c.min) / c.step);
+    const width = ticks * c.tickW;
+    const labels = [];
+    for (let i = 0; i <= ticks; i += c.label) {
+      labels.push(`<span class="rl-num" style="left:${i * c.tickW}px">${numText(c.min + i * c.step, 0)}</span>`);
+    }
+    return `
+      <div class="picker">
+        <label class="picker-value" for="num">
+          <input id="num" class="display" type="text" inputmode="${c.decimals ? "decimal" : "numeric"}" autocomplete="off"
+                 value="${numText(value, c.decimals)}" aria-label="${esc(label)}">
+          <span class="unit">${unit}</span>
+        </label>
+        <div class="ruler-wrap">
+          <div class="ruler" id="ruler" tabindex="-1" aria-hidden="true">
+            <div class="ruler-track" style="width:${width}px">
+              <div class="rl-ticks" style="width:${width + 2}px;
+                background-image:
+                  repeating-linear-gradient(90deg, rgba(243,241,234,.9) 0 2px, transparent 2px ${c.tickW * c.major}px),
+                  repeating-linear-gradient(90deg, rgba(166,165,158,.55) 0 1px, transparent 1px ${c.tickW}px);
+                background-size: 100% 40px, 100% 20px;
+                background-position: 0 0, 0 10px;
+                background-repeat: no-repeat;"></div>
+              ${labels.join("")}
+            </div>
+          </div>
+          <div class="ruler-center" aria-hidden="true"></div>
+          <div class="ruler-fade left" aria-hidden="true"></div>
+          <div class="ruler-fade right" aria-hidden="true"></div>
+        </div>
+        <div class="small muted picker-hint">Листайте шкалу или нажмите на число</div>
+      </div>`;
+  }
+
+  // Подключаем поведение к разметке rulerHtml. onChange вызывается при каждом новом значении.
+  function mountRuler(kind, initial, onChange) {
+    const c = RULERS[kind];
+    const ruler = document.getElementById("ruler");
+    const input = document.getElementById("num");
+    const track = ruler.querySelector ? ruler.querySelector(".ruler-track") : null;
+    let value = initial;
+    let snapTimer = null;
+    let programmatic = false;
+
+    const pad = () => (ruler.clientWidth || 0) / 2;
+    const toScroll = (v) => ((v - c.min) / c.step) * c.tickW;
+    const fromScroll = (x) => {
+      const v = c.min + Math.round(x / c.tickW) * c.step;
+      return Math.min(c.max, Math.max(c.min, Number(v.toFixed(c.decimals))));
+    };
+
+    function layout() {
+      if (track) { track.style.marginLeft = pad() + "px"; track.style.marginRight = pad() + "px"; }
+    }
+    function jump(v, smooth) {
+      programmatic = true;
+      const left = toScroll(v);
+      if (smooth && ruler.scrollTo) ruler.scrollTo({ left, behavior: "smooth" });
+      else ruler.scrollLeft = left;
+      setTimeout(() => { programmatic = false; }, smooth ? 350 : 50);
+    }
+
+    layout();
+    jump(value, false);
+
+    ruler.addEventListener("scroll", () => {
+      const v = fromScroll(ruler.scrollLeft);
+      if (v !== value) {
+        value = v;
+        if (document.activeElement !== input) input.value = numText(v, c.decimals);
+        if (!programmatic) haptic("select");
+        onChange && onChange(v);
+      }
+      clearTimeout(snapTimer);
+      snapTimer = setTimeout(() => {
+        const target = toScroll(fromScroll(ruler.scrollLeft));
+        if (Math.abs(target - ruler.scrollLeft) > 0.5) jump(fromScroll(ruler.scrollLeft), true);
+      }, 120);
+    }, { passive: true });
+
+    // Ввод с клавиатуры: при правильном числе шкала переезжает на него
+    input.addEventListener("focus", () => { setTimeout(() => input.select && input.select(), 0); });
+    input.addEventListener("input", () => {
+      const v = parseFloat(input.value.trim().replace(",", "."));
+      if (isFinite(v) && v >= c.min && v <= c.max) {
+        value = Number(v.toFixed(c.decimals));
+        jump(value, true);
+        onChange && onChange(value);
+      }
+    });
+    input.addEventListener("blur", () => {
+      const v = parseFloat(input.value.trim().replace(",", "."));
+      if (isFinite(v) && v >= c.min && v <= c.max) input.value = numText(v, c.decimals);
+    });
+
+    window.addEventListener("resize", () => { layout(); jump(value, false); });
+    return { get: () => value, set: (v) => { value = v; input.value = numText(v, c.decimals); jump(v, false); } };
+  }
+
   // ---------- Анкета ----------
   const GOALS = {
     lose: { t: "Снизить вес", d: "Дефицит калорий, без жёстких диет" },
@@ -203,27 +314,41 @@
     });
   }
 
+  // Стартовое значение на шкале: прошлый ответ или разумное значение по полу и цели
+  function defaultNumber(step) {
+    if (draft[step] != null) return Number(draft[step]);
+    const male = draft.sex === "m";
+    if (step === "age") return 30;
+    if (step === "height") return male ? 176 : 164;
+    if (step === "weight") return male ? 80 : 65;
+    if (step === "target") {
+      const w = Number(draft.weight) || (male ? 80 : 65);
+      if (draft.goal === "gain") return Math.round(w + 5);
+      const minHealthy = Math.ceil(18.5 * Math.pow((Number(draft.height) || 170) / 100, 2));
+      return Math.max(Math.round(w - 5), Math.min(minHealthy, Math.round(w - 1)));
+    }
+    return 0;
+  }
+
   function renderNumber(step) {
     const cfg = NUMBER_STEPS[step];
     const sub = step === "target"
       ? `Сейчас: ${String(draft.weight).replace(".", ",")} кг`
       : step === "age" ? "Норма калорий зависит от возраста." : "";
-    const val = draft[step] != null ? String(draft[step]).replace(".", ",") : "";
+    const kind = step === "target" ? "weight" : step;
+    const value = defaultNumber(step);
     app.innerHTML = `
       ${progressHtml()}
       <h2 class="q-title display">${esc(cfg.title)}</h2>
       <p class="q-sub">${esc(sub)}</p>
-      <label class="field" for="num">
-        <input id="num" type="text" inputmode="${cfg.int ? "numeric" : "decimal"}" autocomplete="off" value="${esc(val)}" aria-label="${esc(cfg.title)}">
-        <span class="unit">${cfg.unit}</span>
-      </label>
-      <div class="error" id="err" role="alert"></div>
+      ${rulerHtml(kind, value, cfg.unit, cfg.title)}
+      <div class="error" id="err" role="alert" style="text-align:center"></div>
       <div class="grow"></div>
       <button class="primary" id="next" type="button">Далее</button>`;
 
     const input = document.getElementById("num");
     const errEl = document.getElementById("err");
-    setTimeout(() => input.focus(), 150);
+    mountRuler(kind, value, () => { errEl.textContent = ""; });
 
     const submit = () => {
       const raw = input.value.trim().replace(",", ".");
@@ -416,6 +541,52 @@
     }
   }
 
+  // ---------- Иконка Hayanmi на главном экране телефона (Bot API 8.0) ----------
+  const canAddToHome = () =>
+    !!(tg && typeof tg.addToHomeScreen === "function" && tg.isVersionAtLeast && tg.isVersionAtLeast("8.0"));
+
+  function checkHomeScreen() {
+    return new Promise((resolve) => {
+      if (!canAddToHome() || typeof tg.checkHomeScreenStatus !== "function") return resolve("unsupported");
+      const t = setTimeout(() => resolve("unknown"), 800);
+      try {
+        tg.checkHomeScreenStatus((status) => { clearTimeout(t); resolve(status || "unknown"); });
+      } catch (e) { clearTimeout(t); resolve("unsupported"); }
+    });
+  }
+
+  if (tg && typeof tg.onEvent === "function") {
+    tg.onEvent("homeScreenAdded", () => {
+      state.homeScreen = "added";
+      haptic("success");
+      const card = document.getElementById("hs-card");
+      if (card && card.remove) card.remove();
+      const pbtn = document.getElementById("hs-profile");
+      if (pbtn) { pbtn.disabled = true; pbtn.textContent = "Hayanmi уже на главном экране"; }
+    });
+  }
+
+  function addToHome() {
+    haptic();
+    try { tg.addToHomeScreen(); } catch (e) { showAlert("На этом устройстве Telegram пока не умеет добавлять приложения на главный экран."); }
+  }
+
+  const APP_ICON = `<svg width="30" height="30" viewBox="0 0 96 96" aria-hidden="true"><circle cx="48" cy="48" r="40" fill="none" stroke="#2C2E33" stroke-width="10"/><circle cx="48" cy="48" r="40" fill="none" stroke="#D4F25A" stroke-width="10" stroke-linecap="round" stroke-dasharray="180 252" transform="rotate(-90 48 48)"/><path d="M37 29V67M37 51C37 45 41 42 46 42C52 42 59 45 59 53V67" fill="none" stroke="#F3F1EA" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+
+  function homeScreenHtml() {
+    if (!["missed", "unknown"].includes(state.homeScreen) || state.hsDismissed) return "";
+    return `
+      <section class="card homescreen" id="hs-card">
+        <div class="hs-icon">${APP_ICON}</div>
+        <div class="hs-text">
+          <div style="font-size:15px;font-weight:700">Hayanmi на экран «Домой»</div>
+          <div class="small muted">Открывай в одно касание, как обычное приложение</div>
+        </div>
+        <button class="hs-add" id="hs-add" type="button">Добавить</button>
+        <button class="icon-btn" id="hs-close" type="button" aria-label="Скрыть">${ICON_X}</button>
+      </section>`;
+  }
+
   function promoHtml() {
     if (!state.premium || state.premium.active) return "";
     const prices = state.prices || { month: 250, year: 1500, trialDays: 3 };
@@ -503,6 +674,8 @@
 
       ${waterHtml()}
 
+      ${homeScreenHtml()}
+
       ${promoHtml()}
 
       ${mealsHtml || `<section class="card empty"><p class="note muted" style="margin:0">Пока пусто. Сфотографируй еду — и калории посчитаются сами.</p></section>`}
@@ -513,6 +686,15 @@
 
     const openSub = () => { haptic(); state.premium?.active ? renderSubscription() : renderPaywall(); };
     document.getElementById("profile-btn").addEventListener("click", () => { haptic(); renderProfile(); });
+    const hsAdd = document.getElementById("hs-add");
+    if (hsAdd) hsAdd.addEventListener("click", addToHome);
+    const hsClose = document.getElementById("hs-close");
+    if (hsClose) hsClose.addEventListener("click", () => {
+      haptic();
+      state.hsDismissed = true;
+      storage.set("hs_dismissed", "1");
+      renderHome();
+    });
     document.getElementById("premium").addEventListener("click", openSub);
     const promoBtn = document.getElementById("promo-btn");
     if (promoBtn) promoBtn.addEventListener("click", openSub);
@@ -675,8 +857,13 @@
 
       <button class="primary" id="save-rem" type="button">Сохранить напоминания</button>
       <button class="secondary" id="sub-btn" type="button" style="margin-top:10px">${state.premium?.active ? "Моя подписка" : "Hayanmi Премиум"}</button>
+      ${state.homeScreen && state.homeScreen !== "unsupported"
+        ? `<button class="secondary" id="hs-profile" type="button" style="margin-top:10px" ${state.homeScreen === "added" ? "disabled" : ""}>${state.homeScreen === "added" ? "Hayanmi уже на главном экране" : "Добавить на главный экран"}</button>`
+        : ""}
       ${tabbarHtml("")}`;
     bindTabs();
+    const hsP = document.getElementById("hs-profile");
+    if (hsP && state.homeScreen !== "added") hsP.addEventListener("click", addToHome);
     document.getElementById("sub-btn").addEventListener("click", () => {
       haptic();
       state.premium?.active ? renderSubscription() : renderPaywall();
@@ -1062,21 +1249,22 @@
   };
 
   function tabbarHtml(active) {
-    const tabs = TABS.filter((t) => t.id !== "plus");
     return `
       <div class="tab-spacer"></div>
       <nav class="tabbar" aria-label="Разделы">
         <div class="tabs-glass">
-          ${tabs.map((t) => {
+          ${TABS.map((t) => {
+            if (t.id === "plus") {
+              return `<button class="tab-plus" id="tab-plus" type="button" aria-label="Добавить еду по фото">
+                  <svg width="26" height="26" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5V19M5 12H19" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/></svg>
+                </button>`;
+            }
             const on = t.id === active;
             return `<button class="tab ${on ? "on" : ""}" type="button" data-tab="${t.id}" ${on ? 'aria-current="page"' : ""}>
                 ${on ? TAB_ICONS_ON[t.id] : TAB_ICONS[t.id]}<span>${t.t}</span>
               </button>`;
           }).join("")}
         </div>
-        <button class="tab-plus" id="tab-plus" type="button" aria-label="Добавить еду по фото">
-          <svg width="26" height="26" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5V19M5 12H19" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/></svg>
-        </button>
       </nav>
       <input id="file" type="file" accept="image/*" hidden>`;
   }
@@ -1345,17 +1533,14 @@
     app.innerHTML = `
       <h2 class="q-title display" style="margin-top:4px">Ваш вес сегодня</h2>
       <p class="q-sub">Лучше взвешиваться утром, до завтрака.</p>
-      <label class="field" for="num">
-        <input id="num" type="text" inputmode="decimal" autocomplete="off" value="${esc(String(current).replace(".", ","))}" aria-label="Вес в килограммах">
-        <span class="unit">кг</span>
-      </label>
-      <div class="error" id="err" role="alert"></div>
+      ${rulerHtml("weight", Number(current), "кг", "Вес в килограммах")}
+      <div class="error" id="err" role="alert" style="text-align:center"></div>
       <div class="grow"></div>
       <button class="primary" id="save" type="button">Сохранить</button>`;
 
     const input = document.getElementById("num");
     const errEl = document.getElementById("err");
-    setTimeout(() => { input.focus(); input.select && input.select(); }, 150);
+    mountRuler("weight", Number(current), () => { errEl.textContent = ""; });
     input.addEventListener("input", () => { errEl.textContent = ""; });
 
     const save = async () => {
@@ -1854,8 +2039,12 @@
     }
 
     state.date = localDate();
+    const homeCheck = checkHomeScreen();
+    const hsDismissed = storage.get("hs_dismissed");
     try {
       await loadState();
+      state.homeScreen = await homeCheck;
+      state.hsDismissed = !!(await hsDismissed);
       // Даём заставке доиграть, но не держим дольше ~1 секунды
       const wait = 1000 - (Date.now() - splashStart);
       if (wait > 0) await new Promise((r) => setTimeout(r, wait));

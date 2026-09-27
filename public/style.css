@@ -183,7 +183,7 @@ button { font-family: inherit; cursor: pointer; }
   display: flex; align-items: center; gap: 10px;
   max-width: 520px; margin: 0 auto;
 }
-.tabs-glass, .tab-plus {
+.tabs-glass {
   background: rgba(38, 40, 44, 0.62);
   -webkit-backdrop-filter: blur(22px) saturate(180%); backdrop-filter: blur(22px) saturate(180%);
   border: 0.5px solid rgba(255, 255, 255, 0.14);
@@ -191,7 +191,7 @@ button { font-family: inherit; cursor: pointer; }
 }
 .tabs-glass {
   flex: 1; height: 64px; border-radius: 32px; padding: 4px;
-  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 2px;
+  display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 2px; align-items: center;
 }
 .tab {
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
@@ -204,10 +204,10 @@ button { font-family: inherit; cursor: pointer; }
 .tab:active { transform: scale(0.92); }
 .tab:active svg { transform: scale(0.9); }
 .tab-plus {
-  width: 64px; height: 64px; border-radius: 32px; flex-shrink: 0;
+  justify-self: center; width: 54px; height: 54px; border-radius: 27px;
   display: flex; align-items: center; justify-content: center; color: var(--bg);
-  background: rgba(212, 242, 90, 0.92); border-color: rgba(255, 255, 255, 0.35);
-  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.55), inset 0 -1px 0 rgba(0, 0, 0, 0.12);
+  background: var(--accent); border: 0.5px solid rgba(255, 255, 255, 0.4);
+  box-shadow: 0 4px 16px rgba(212, 242, 90, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.6), inset 0 -1px 0 rgba(0, 0, 0, 0.12);
   transition: transform .35s cubic-bezier(.34, 1.56, .64, 1);
 }
 .tab-plus:active { transform: scale(0.9); }
@@ -309,3 +309,31 @@ button { font-family: inherit; cursor: pointer; }
 @media (prefers-reduced-motion: reduce) {
   .paywall.enter, .paywall.enter > *, .paywall.leave { animation: none !important; }
 }
+
+/* ---- Шкала-линейка ---- */
+.picker { margin-top: 8px; }
+.picker-value { display: flex; align-items: baseline; justify-content: center; gap: 10px; cursor: text; }
+.picker-value input {
+  width: 5.2ch; min-width: 0; text-align: right; border: none; outline: none; background: transparent; color: var(--text);
+  font-family: Unbounded, "Arial Black", sans-serif; font-weight: 700; font-size: 60px; line-height: 1.1; padding: 0;
+  border-bottom: 2px dashed transparent; transition: border-color .2s;
+}
+.picker-value input:focus { border-bottom-color: var(--accent); }
+.picker-value .unit { font-size: 20px; color: var(--muted); font-weight: 600; min-width: 3ch; }
+.ruler-wrap { position: relative; margin: 22px -16px 0; height: 76px; }
+.ruler { height: 76px; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; -webkit-overflow-scrolling: touch; touch-action: pan-x; }
+.ruler::-webkit-scrollbar { display: none; }
+.ruler-track { position: relative; height: 76px; }
+.rl-ticks { position: absolute; left: -1px; top: 4px; height: 40px; }
+.rl-num { position: absolute; top: 50px; transform: translateX(-50%); font-size: 13px; color: var(--muted); font-weight: 600; white-space: nowrap; }
+.ruler-center { position: absolute; left: 50%; top: 0; width: 4px; height: 52px; margin-left: -2px; border-radius: 2px; background: var(--accent); box-shadow: 0 0 12px rgba(212, 242, 90, 0.5); pointer-events: none; }
+.ruler-fade { position: absolute; top: 0; bottom: 0; width: 64px; pointer-events: none; }
+.ruler-fade.left { left: 0; background: linear-gradient(90deg, var(--bg), rgba(14, 15, 12, 0)); }
+.ruler-fade.right { right: 0; background: linear-gradient(270deg, var(--bg), rgba(14, 15, 12, 0)); }
+.picker-hint { text-align: center; margin-top: 8px; }
+
+/* ---- Главный экран телефона ---- */
+.homescreen { display: flex; align-items: center; gap: 12px; }
+.homescreen .hs-icon { width: 44px; height: 44px; border-radius: 12px; background: var(--card2); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.homescreen .hs-text { flex: 1; min-width: 0; }
+.homescreen .hs-add { height: 38px; padding: 0 14px; border-radius: 19px; border: none; background: var(--accent); color: var(--bg); font-size: 14px; font-weight: 700; }
