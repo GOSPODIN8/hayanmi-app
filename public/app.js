@@ -119,6 +119,7 @@
     state.prices = data.prices || null;
     state.water = data.water || null;
     state.reminders = data.reminders || null;
+    state.access = data.access || null;
     return data;
   }
 
@@ -163,7 +164,7 @@
     const steps = visibleSteps();
     if (stepIndex >= steps.length) return renderResult();
     const step = steps[stepIndex];
-    setBack(stepIndex > 0 ? () => { stepIndex--; renderStep(); } : (draft._editing ? () => renderHome() : null));
+    setBack(stepIndex > 0 ? () => { stepIndex--; renderStep(); } : (draft._editing ? () => renderProfile() : null));
 
     if (step === "sex") {
       return renderChoice("Ваш пол", "Нужен для точного расчёта обмена веществ.", "sex", {
@@ -502,18 +503,12 @@
 
       ${mealsHtml || `<section class="card empty"><p class="note muted" style="margin:0">Пока пусто. Сфотографируй еду — и калории посчитаются сами.</p></section>`}
 
-      <div class="grow"></div>
       ${quotaHtml}
-      <button class="primary" id="add-photo" type="button">Добавить еду по фото</button>
-      <div class="row-btns">
-        <button class="secondary" id="edit" type="button">Профиль</button>
-        <button class="secondary ${state.premium?.active ? "" : "accent"}" id="sub" type="button">${state.premium?.active ? "Подписка" : "Премиум"}</button>
-      </div>
-      <input id="file" type="file" accept="image/*" hidden>`;
+      ${tabbarHtml("home")}`;
+    bindTabs();
 
     const openSub = () => { haptic(); state.premium?.active ? renderSubscription() : renderPaywall(); };
     document.getElementById("premium").addEventListener("click", openSub);
-    document.getElementById("sub").addEventListener("click", openSub);
     const promoBtn = document.getElementById("promo-btn");
     if (promoBtn) promoBtn.addEventListener("click", openSub);
 
@@ -532,24 +527,6 @@
       });
     });
 
-    const fileInput = document.getElementById("file");
-    document.getElementById("add-photo").addEventListener("click", () => {
-      haptic();
-      if (q && !q.unlimited && q.left <= 0) return renderPaywall("limit");
-      fileInput.click();
-    });
-    fileInput.addEventListener("change", async () => {
-      const file = fileInput.files && fileInput.files[0];
-      if (!file) return;
-      try {
-        const dataUrl = await resizeImage(file);
-        renderPhotoPreview(dataUrl);
-      } catch (e) {
-        showAlert("Не удалось открыть это фото. Попробуйте другое.");
-      }
-    });
-
-    document.getElementById("edit").addEventListener("click", () => { haptic(); renderProfile(); });
 
     const wPlus = document.getElementById("w-plus");
     const wMinus = document.getElementById("w-minus");
@@ -656,7 +633,7 @@
 
   // ---------- Профиль и напоминания ----------
   function renderProfile() {
-    setBack(() => renderHome());
+    setBack(null);
     const a = state.profile.answers;
     const r = state.profile.result;
     const rem = JSON.parse(JSON.stringify(state.reminders || { meals: true, water: true, times: { breakfast: "09:00", lunch: "13:30", dinner: "19:00" } }));
@@ -691,8 +668,14 @@
         </label>
       </section>
 
-      <div class="grow"></div>
-      <button class="primary" id="save-rem" type="button">Сохранить</button>`;
+      <button class="primary" id="save-rem" type="button">Сохранить напоминания</button>
+      <button class="secondary" id="sub-btn" type="button" style="margin-top:10px">${state.premium?.active ? "Моя подписка" : "Hayanmi Премиум"}</button>
+      ${tabbarHtml("profile")}`;
+    bindTabs();
+    document.getElementById("sub-btn").addEventListener("click", () => {
+      haptic();
+      state.premium?.active ? renderSubscription() : renderPaywall();
+    });
 
     const mealsBox = document.getElementById("rem-meals");
     mealsBox.addEventListener("change", () => {
@@ -729,7 +712,8 @@
         const data = await api("/reminders", { method: "POST", body: { reminders } });
         state.reminders = data.reminders;
         haptic("success");
-        renderHome();
+        btn.textContent = "Сохранено ✓";
+        setTimeout(() => { btn.disabled = false; btn.textContent = "Сохранить напоминания"; }, 1500);
       } catch (err) {
         btn.disabled = false;
         btn.textContent = "Сохранить";
@@ -1034,6 +1018,636 @@
     draw();
   }
 
+  // ---------- Нижнее меню ----------
+  const TAB_ICONS = {
+    home: `<svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11L12 4L20 11V20H14V14H10V20H4Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>`,
+    progress: `<svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19L10 12L14 15L20 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+    recipes: `<svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5.5C5 4.7 5.7 4 6.5 4H19V18H6.5C5.7 18 5 18.7 5 19.5M5 5.5V19.5M5 19.5C5 20.3 5.7 21 6.5 21H19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M9 8H15M9 11.5H13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`,
+    profile: `<svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4" fill="none" stroke="currentColor" stroke-width="2"/><path d="M4 20C5 16 8 14 12 14C16 14 19 16 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`,
+  };
+  const TABS = [
+    { id: "home", t: "Главная" },
+    { id: "progress", t: "Прогресс" },
+    { id: "plus" },
+    { id: "recipes", t: "Рецепты" },
+    { id: "profile", t: "Профиль" },
+  ];
+
+  function tabbarHtml(active) {
+    return `
+      <div class="tab-spacer"></div>
+      <nav class="tabbar" aria-label="Разделы">
+        ${TABS.map((t) => t.id === "plus"
+          ? `<button class="tab-plus" id="tab-plus" type="button" aria-label="Добавить еду по фото">
+               <svg width="26" height="26" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5V19M5 12H19" stroke="#0E0F0C" stroke-width="2.6" stroke-linecap="round"/></svg>
+             </button>`
+          : `<button class="tab ${t.id === active ? "on" : ""}" type="button" data-tab="${t.id}" ${t.id === active ? 'aria-current="page"' : ""}>
+               ${TAB_ICONS[t.id]}<span>${t.t}</span>
+             </button>`).join("")}
+      </nav>
+      <input id="file" type="file" accept="image/*" hidden>`;
+  }
+
+  function bindTabs() {
+    app.querySelectorAll("[data-tab]").forEach((b) =>
+      b.addEventListener("click", () => {
+        haptic("select");
+        const go = { home: renderHome, progress: renderProgress, recipes: renderRecipes, profile: renderProfile }[b.dataset.tab];
+        if (go) go();
+      })
+    );
+    const fileInput = document.getElementById("file");
+    document.getElementById("tab-plus").addEventListener("click", () => {
+      haptic();
+      const q = state.quota;
+      if (q && !q.unlimited && q.left <= 0) return renderPaywall("limit");
+      fileInput.click();
+    });
+    fileInput.addEventListener("change", async () => {
+      const file = fileInput.files && fileInput.files[0];
+      if (!file) return;
+      try {
+        renderPhotoPreview(await resizeImage(file));
+      } catch (e) {
+        showAlert("Не удалось открыть это фото. Попробуйте другое.");
+      }
+    });
+  }
+
+  // ---------- Заставка ----------
+  function renderSplash() {
+    setBack(null);
+    app.innerHTML = `
+      <div class="splash" aria-label="Hayanmi загружается">
+        <svg class="splash-logo" width="112" height="112" viewBox="0 0 96 96" aria-hidden="true">
+          <circle cx="48" cy="48" r="40" fill="none" stroke="#2C2E33" stroke-width="8"/>
+          <circle class="splash-ring" cx="48" cy="48" r="40" fill="none" stroke="#D4F25A" stroke-width="8" stroke-linecap="round" stroke-dasharray="251.3" stroke-dashoffset="251.3" transform="rotate(-90 48 48)"/>
+          <path d="M37 29V67M37 51C37 45 41 42 46 42C52 42 59 45 59 53V67" fill="none" stroke="#F3F1EA" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <div class="splash-word display">hayanmi</div>
+      </div>`;
+  }
+
+  // ---------- Приветственные слайды ----------
+  const INTRO = [
+    {
+      title: "Калории с одного фото",
+      text: "Сфотографируй тарелку — Hayanmi распознает блюда и посчитает калории, белки, жиры и углеводы.",
+      art: `<svg width="240" height="200" viewBox="0 0 240 200" aria-hidden="true">
+        <rect x="30" y="16" width="180" height="168" rx="28" fill="#17181A" stroke="#2C2E33" stroke-width="2"/>
+        <path d="M52 44V36A8 8 0 0 1 60 28H68M172 28H180A8 8 0 0 1 188 36V44M188 156V164A8 8 0 0 1 180 172H172M68 172H60A8 8 0 0 1 52 164V156" fill="none" stroke="#D4F25A" stroke-width="4" stroke-linecap="round"/>
+        <circle cx="120" cy="100" r="48" fill="#202226" stroke="#2C2E33" stroke-width="2"/>
+        <circle cx="120" cy="100" r="32" fill="none" stroke="#3A3D42" stroke-width="2"/>
+        <circle cx="106" cy="92" r="10" fill="#E6DFCC"/><circle cx="132" cy="94" r="9" fill="#F4A259"/><circle cx="118" cy="114" r="9" fill="#86B6FF"/>
+        <rect x="138" y="132" width="84" height="32" rx="16" fill="#D4F25A"/>
+        <text x="180" y="153" text-anchor="middle" font-family="Manrope, sans-serif" font-size="14" font-weight="700" fill="#0E0F0C">590 ккал</text>
+      </svg>`,
+    },
+    {
+      title: "Твоя личная норма",
+      text: "Ответь на 7 коротких вопросов — рассчитаем норму калорий и БЖУ под твою цель.",
+      art: `<svg width="240" height="200" viewBox="0 0 240 200" aria-hidden="true">
+        <circle cx="120" cy="100" r="74" fill="none" stroke="#2C2E33" stroke-width="14"/>
+        <circle cx="120" cy="100" r="74" fill="none" stroke="#D4F25A" stroke-width="14" stroke-linecap="round" stroke-dasharray="300 465" transform="rotate(-90 120 100)"/>
+        <text x="120" y="104" text-anchor="middle" font-family="Unbounded, sans-serif" font-size="30" font-weight="700" fill="#F3F1EA">2 250</text>
+        <text x="120" y="128" text-anchor="middle" font-family="Manrope, sans-serif" font-size="13" fill="#A6A59E">ккал в день</text>
+      </svg>`,
+    },
+    {
+      title: "Всё внутри Telegram",
+      text: "Присылай фото еды прямо в чат боту, а напоминания не дадут забыть про еду и воду.",
+      art: `<svg width="240" height="200" viewBox="0 0 240 200" aria-hidden="true">
+        <rect x="104" y="18" width="112" height="72" rx="18" fill="#2C4A1E"/>
+        <rect x="118" y="30" width="84" height="48" rx="10" fill="#3B5E27"/>
+        <circle cx="160" cy="54" r="15" fill="#202226"/><circle cx="154" cy="50" r="5" fill="#E6DFCC"/><circle cx="165" cy="57" r="5" fill="#F4A259"/>
+        <rect x="24" y="104" width="160" height="80" rx="18" fill="#17181A" stroke="#2C2E33" stroke-width="2"/>
+        <text x="42" y="132" font-family="Manrope, sans-serif" font-size="14" font-weight="700" fill="#F3F1EA">Обед · 590 ккал</text>
+        <text x="42" y="152" font-family="Manrope, sans-serif" font-size="12" fill="#A6A59E">Осталось 1 240 ккал</text>
+        <rect x="42" y="160" width="60" height="16" rx="8" fill="#D4F25A"/>
+        <rect x="108" y="160" width="60" height="16" rx="8" fill="#2C2E33"/>
+      </svg>`,
+    },
+  ];
+
+  function renderIntro() {
+    setBack(null);
+    let i = 0;
+
+    const finish = () => {
+      storage.set("intro_seen", "1");
+      draft = {};
+      stepIndex = 0;
+      renderStep();
+    };
+
+    function draw() {
+      const s = INTRO[i];
+      const last = i === INTRO.length - 1;
+      app.innerHTML = `
+        <div class="intro" id="intro">
+          <div class="intro-top">
+            ${last ? "<span></span>" : `<button class="link-btn intro-skip" id="skip" type="button">Пропустить</button>`}
+          </div>
+          <div class="intro-art">${s.art}</div>
+          <h2 class="q-title display intro-title">${s.title}</h2>
+          <p class="q-sub intro-text">${s.text}</p>
+          <div class="dots" aria-hidden="true">${INTRO.map((_, k) => `<span class="${k === i ? "on" : ""}"></span>`).join("")}</div>
+          <div class="grow"></div>
+          <button class="primary" id="next" type="button">${last ? "Начать" : "Далее"}</button>
+        </div>`;
+
+      const next = () => { haptic("select"); if (last) finish(); else { i++; draw(); } };
+      const prev = () => { if (i > 0) { haptic("select"); i--; draw(); } };
+      document.getElementById("next").addEventListener("click", next);
+      const skip = document.getElementById("skip");
+      if (skip) skip.addEventListener("click", () => { haptic(); finish(); });
+
+      // Листание свайпом
+      const box = document.getElementById("intro");
+      let x0 = null;
+      box.addEventListener("touchstart", (e) => { x0 = e.touches[0].clientX; }, { passive: true });
+      box.addEventListener("touchend", (e) => {
+        if (x0 === null) return;
+        const dx = e.changedTouches[0].clientX - x0;
+        x0 = null;
+        if (dx < -50) next();
+        else if (dx > 50) prev();
+      });
+    }
+
+    draw();
+  }
+
+  // ---------- Прогресс ----------
+  const WEEKDAYS = ["Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"];
+  const kg = (v) => (Math.round(v * 10) / 10).toLocaleString("ru-RU", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  const shortDate = (iso) => { const [, m, d] = iso.split("-"); return `${Number(d)}.${m}`; };
+
+  function weightChart(points, target) {
+    const W = 320, H = 150, padL = 8, padR = 44, padT = 16, padB = 24;
+    const vals = points.map((p) => p.weight).concat(target ? [target] : []);
+    let lo = Math.min(...vals) - 1, hi = Math.max(...vals) + 1;
+    const X = (i) => points.length === 1 ? (padL + W - padR) / 2 : padL + (i / (points.length - 1)) * (W - padL - padR);
+    const Y = (v) => padT + (1 - (v - lo) / (hi - lo)) * (H - padT - padB);
+    const line = points.map((p, i) => `${i ? "L" : "M"}${X(i).toFixed(1)} ${Y(p.weight).toFixed(1)}`).join(" ");
+    const last = points[points.length - 1];
+    const lx = X(points.length - 1), ly = Y(last.weight);
+    return `
+      <svg width="100%" viewBox="0 0 ${W} ${H}" aria-label="График веса">
+        ${target ? `<line x1="${padL}" x2="${W - padR}" y1="${Y(target).toFixed(1)}" y2="${Y(target).toFixed(1)}" stroke="#D4F25A" stroke-width="1.5" stroke-dasharray="4 5" opacity="0.7"/>
+          <text x="${W - padR + 6}" y="${(Y(target) + 4).toFixed(1)}" font-size="11" fill="#D4F25A" font-family="Manrope, sans-serif">цель</text>` : ""}
+        ${points.length > 1 ? `<path d="${line}" fill="none" stroke="#F3F1EA" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>` : ""}
+        ${points.map((p, i) => `<circle cx="${X(i).toFixed(1)}" cy="${Y(p.weight).toFixed(1)}" r="${i === points.length - 1 ? 5 : 3}" fill="${i === points.length - 1 ? "#D4F25A" : "#F3F1EA"}"/>`).join("")}
+        <text x="${Math.min(lx + 8, W - 4)}" y="${(ly - 8).toFixed(1)}" font-size="12" font-weight="700" fill="#F3F1EA" font-family="Manrope, sans-serif" text-anchor="${lx > W - padR - 20 ? "end" : "start"}">${kg(last.weight)}</text>
+        <text x="${padL}" y="${H - 4}" font-size="11" fill="#A6A59E" font-family="Manrope, sans-serif">${shortDate(points[0].date)}</text>
+        ${points.length > 1 ? `<text x="${W - padR}" y="${H - 4}" font-size="11" fill="#A6A59E" font-family="Manrope, sans-serif" text-anchor="end">${shortDate(last.date)}</text>` : ""}
+      </svg>`;
+  }
+
+  function weekChart(week, norm) {
+    const W = 320, H = 150, padT = 12, padB = 24, gap = 10;
+    const max = Math.max(norm * 1.25, ...week.map((d) => d.kcal));
+    const bw = (W - gap * (week.length - 1)) / week.length;
+    const Y = (v) => padT + (1 - v / max) * (H - padT - padB);
+    const ny = Y(norm);
+    return `
+      <svg width="100%" viewBox="0 0 ${W} ${H}" aria-label="Калории за неделю">
+        ${week.map((d, i) => {
+          const x = i * (bw + gap);
+          const y = Y(d.kcal);
+          const today = i === week.length - 1;
+          const color = d.kcal > norm * 1.05 ? "#F4A259" : today ? "#D4F25A" : "#5B5E55";
+          const wd = WEEKDAYS[new Date(d.date + "T12:00:00").getDay()];
+          return `
+            ${d.kcal > 0 ? `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${(H - padB - y).toFixed(1)}" rx="6" fill="${color}"/>` : `<rect x="${x.toFixed(1)}" y="${H - padB - 3}" width="${bw.toFixed(1)}" height="3" rx="1.5" fill="#2C2E33"/>`}
+            <text x="${(x + bw / 2).toFixed(1)}" y="${H - 6}" font-size="11" text-anchor="middle" fill="${today ? "#F3F1EA" : "#A6A59E"}" font-weight="${today ? 700 : 400}" font-family="Manrope, sans-serif">${wd}</text>`;
+        }).join("")}
+        <line x1="0" x2="${W}" y1="${ny.toFixed(1)}" y2="${ny.toFixed(1)}" stroke="#F3F1EA" stroke-width="1" stroke-dasharray="3 5" opacity="0.6"/>
+      </svg>`;
+  }
+
+  async function renderProgress() {
+    setBack(null);
+    app.innerHTML = `
+      <div id="progress-root">
+        <h1 class="display" style="font-size:22px;margin:4px 0 16px">Прогресс</h1>
+        <div class="loading"><div class="spinner" aria-label="Загрузка"></div></div>
+      </div>
+      ${tabbarHtml("progress")}`;
+    bindTabs();
+
+    let data;
+    try {
+      data = await api("/progress?date=" + state.date);
+    } catch (e) {
+      const root = document.getElementById("progress-root");
+      if (root) root.innerHTML = `<h1 class="display" style="font-size:22px;margin:4px 0 16px">Прогресс</h1>
+        <section class="card empty"><p class="note muted" style="margin:0">Не получилось загрузить. Проверьте интернет.</p></section>`;
+      return;
+    }
+    const root = document.getElementById("progress-root");
+    if (!root) return; // пользователь уже ушёл на другой экран
+
+    const a = state.profile.answers;
+    const r = state.profile.result;
+    const weights = data.weights.length ? data.weights : [{ date: state.date, weight: Number(a.weight) }];
+    const start = weights[0].weight;
+    const current = weights[weights.length - 1].weight;
+    const diff = Math.round((current - start) * 10) / 10;
+    const target = a.goal !== "keep" && a.target ? Number(a.target) : null;
+    const bmi = Calc.bmi(current, a.height);
+
+    let goalLine = "Цель — держать вес";
+    let goalPct = null;
+    if (target) {
+      const total = Math.abs(start - target);
+      const done = a.goal === "lose" ? start - current : current - start;
+      goalPct = total > 0 ? Math.max(0, Math.min(1, done / total)) : 1;
+      const left = Math.abs(current - target);
+      goalLine = `До цели ${kg(target)} кг осталось ${kg(left)} кг`;
+    }
+
+    const logged = data.week.filter((d) => d.kcal > 0);
+    const avg = logged.length ? logged.reduce((s, d) => s + d.kcal, 0) / logged.length : 0;
+
+    root.innerHTML = `
+      <h1 class="display" style="font-size:22px;margin:4px 0 16px">Прогресс</h1>
+
+      <div class="stat-row">
+        <div class="stat"><div class="v display">${data.streak}</div><div class="k">${data.streak === 1 ? "день" : data.streak >= 2 && data.streak <= 4 ? "дня" : "дней"} подряд</div></div>
+        <div class="stat"><div class="v display">${bmi.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}</div><div class="k">ИМТ</div></div>
+        <div class="stat"><div class="v display">${fmt(avg)}</div><div class="k">ккал в среднем</div></div>
+      </div>
+
+      <section class="card">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
+          <div>
+            <div class="small muted">Вес</div>
+            <div class="display" style="font-size:30px;margin-top:4px">${kg(current)} <span style="font-size:16px">кг</span></div>
+            <div class="small ${diff === 0 ? "muted" : ""}" style="margin-top:4px;color:${diff === 0 ? "" : (a.goal === "gain" ? diff > 0 : diff < 0) ? "var(--accent)" : "var(--fat)"}">
+              ${diff === 0 ? "Без изменений с начала" : `${diff > 0 ? "+" : "−"}${kg(Math.abs(diff))} кг с начала`}
+            </div>
+          </div>
+          <button class="water-add" id="log-weight" type="button" style="background:var(--accent)">Записать вес</button>
+        </div>
+        ${weightChart(weights, target)}
+        <div class="small muted" style="margin-top:6px">${goalLine}</div>
+        ${goalPct !== null ? `<div class="bar" style="margin-top:8px"><div style="width:${Math.round(goalPct * 100)}%;background:var(--accent)"></div></div>` : ""}
+      </section>
+
+      <section class="card">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px">
+          <strong>Калории за 7 дней</strong>
+          <span class="small muted">норма ${fmt(r.kcal)}</span>
+        </div>
+        ${weekChart(data.week, r.kcal)}
+      </section>`;
+
+    document.getElementById("log-weight").addEventListener("click", () => { haptic(); renderWeightInput(current); });
+  }
+
+  // ---------- Запись веса ----------
+  function renderWeightInput(current) {
+    setBack(() => renderProgress());
+    app.innerHTML = `
+      <h2 class="q-title display" style="margin-top:4px">Ваш вес сегодня</h2>
+      <p class="q-sub">Лучше взвешиваться утром, до завтрака.</p>
+      <label class="field" for="num">
+        <input id="num" type="text" inputmode="decimal" autocomplete="off" value="${esc(String(current).replace(".", ","))}" aria-label="Вес в килограммах">
+        <span class="unit">кг</span>
+      </label>
+      <div class="error" id="err" role="alert"></div>
+      <div class="grow"></div>
+      <button class="primary" id="save" type="button">Сохранить</button>`;
+
+    const input = document.getElementById("num");
+    const errEl = document.getElementById("err");
+    setTimeout(() => { input.focus(); input.select && input.select(); }, 150);
+    input.addEventListener("input", () => { errEl.textContent = ""; });
+
+    const save = async () => {
+      const w = Math.round(parseFloat(input.value.trim().replace(",", ".")) * 10) / 10;
+      if (!isFinite(w) || w < 35 || w > 250) { errEl.textContent = "Введите вес от 35 до 250 кг."; haptic("error"); return; }
+      const btn = document.getElementById("save");
+      btn.disabled = true;
+      btn.textContent = "Сохраняю…";
+      try {
+        await api("/weight", { method: "POST", body: { date: state.date, weight: w } });
+
+        // Пересчитываем норму под новый вес; если цель достигнута — переходим на поддержание
+        const answers = { ...state.profile.answers, weight: w };
+        const reached = answers.target && (
+          (answers.goal === "lose" && w <= answers.target) || (answers.goal === "gain" && w >= answers.target)
+        );
+        if (reached) { answers.goal = "keep"; delete answers.target; }
+        const oldKcal = state.profile.result.kcal;
+        const result = Calc.calculate(answers);
+        const profile = { ...state.profile, answers, result, savedAt: new Date().toISOString() };
+        await api("/profile", { method: "POST", body: { profile } });
+        state.profile = profile;
+        if (state.water) state.water.goal = Math.min(3500, Math.max(1500, Math.round((w * 30) / 100) * 100));
+        haptic("success");
+
+        if (reached) return renderGoalReached(w);
+        if (Math.abs(result.kcal - oldKcal) >= 10) showAlert(`Норма обновлена под новый вес: ${fmt(result.kcal)} ккал в день.`);
+        renderProgress();
+      } catch (e) {
+        haptic("error");
+        btn.disabled = false;
+        btn.textContent = "Сохранить";
+        showAlert("Не получилось сохранить. Попробуйте ещё раз.");
+      }
+    };
+    document.getElementById("save").addEventListener("click", save);
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") save(); });
+  }
+
+  function renderGoalReached(w) {
+    setBack(null);
+    app.innerHTML = `
+      <div style="margin-top:24px">${LOGO}</div>
+      <h2 class="q-title display" style="margin-top:18px">Цель достигнута!</h2>
+      <p class="q-sub">${kg(w)} кг — отличный результат. Мы перевели норму на поддержание веса: ${fmt(state.profile.result.kcal)} ккал в день.</p>
+      <div class="grow"></div>
+      <div class="stack">
+        <button class="primary" id="new-goal" type="button">Поставить новую цель</button>
+        <button class="secondary" id="later" type="button">Позже</button>
+      </div>`;
+    document.getElementById("new-goal").addEventListener("click", () => {
+      draft = { ...state.profile.answers, _editing: true };
+      stepIndex = visibleSteps().indexOf("goal");
+      if (stepIndex < 0) stepIndex = 0;
+      renderStep();
+    });
+    document.getElementById("later").addEventListener("click", () => renderProgress());
+  }
+
+  // ---------- Рецепты ----------
+  const CATS = [
+    { id: "all", t: "Все" }, { id: "breakfast", t: "Завтрак" }, { id: "lunch", t: "Обед" },
+    { id: "dinner", t: "Ужин" }, { id: "snack", t: "Перекус" },
+  ];
+  const RTAGS = [
+    { id: "protein", t: "Много белка" }, { id: "light", t: "До 400 ккал" },
+    { id: "quick", t: "Быстро" }, { id: "veg", t: "Без мяса" },
+  ];
+  const LOCK = `<svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2" fill="none" stroke="#A6A59E" stroke-width="2"/><path d="M8 11V8A4 4 0 0 1 16 8V11" fill="none" stroke="#A6A59E" stroke-width="2"/></svg>`;
+  const CLOCK = `<svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 7V12L15 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`;
+
+  let catalog = null;
+  const recipeFilter = { cat: "all", tags: [] };
+  const hasPremiumAccess = () => !!(state.access?.premium || state.premium?.active);
+
+  async function loadCatalog() {
+    if (catalog) return catalog;
+    const res = await fetch("/recipes.json");
+    catalog = await res.json();
+    return catalog;
+  }
+
+  function leftToday() {
+    const r = state.profile.result;
+    const eaten = totalsOf(state.entries);
+    return { kcal: Math.round(r.kcal - eaten.kcal), protein: Math.round(r.protein - eaten.p) };
+  }
+
+  async function renderRecipes() {
+    setBack(null);
+    app.innerHTML = `
+      <div id="recipes-root">
+        <h1 class="display" style="font-size:22px;margin:4px 0 16px">Рецепты</h1>
+        <div class="loading"><div class="spinner" aria-label="Загрузка"></div></div>
+      </div>
+      ${tabbarHtml("recipes")}`;
+    bindTabs();
+
+    let list;
+    try {
+      list = await loadCatalog();
+    } catch (e) {
+      const root = document.getElementById("recipes-root");
+      if (root) root.innerHTML = `<h1 class="display" style="font-size:22px;margin:4px 0 16px">Рецепты</h1>
+        <section class="card empty"><p class="note muted" style="margin:0">Не получилось загрузить рецепты. Проверьте интернет.</p></section>`;
+      return;
+    }
+    const root = document.getElementById("recipes-root");
+    if (!root) return;
+
+    const left = leftToday();
+    const premium = hasPremiumAccess();
+    const shown = list.filter((r) =>
+      (recipeFilter.cat === "all" || r.cat === recipeFilter.cat) &&
+      recipeFilter.tags.every((t) => r.tags.includes(t))
+    );
+
+    root.innerHTML = `
+      <h1 class="display" style="font-size:22px;margin:4px 0 16px">Рецепты</h1>
+
+      <section class="promo chef">
+        <div class="promo-top">
+          <div class="promo-title display">ИИ-повар</div>
+          ${premium ? "" : `<span class="pill">Премиум</span>`}
+        </div>
+        <p class="promo-text">${left.kcal > 0
+          ? `Подберёт блюдо под то, что осталось на сегодня: ${fmt(left.kcal)} ккал.`
+          : "Норма на сегодня выполнена — подберу лёгкий перекус."}</p>
+        <button class="primary promo-btn" id="chef" type="button">Подобрать рецепт</button>
+      </section>
+
+      <div class="chips" role="group" aria-label="Приём пищи">
+        ${CATS.map((c) => `<button class="chip ${recipeFilter.cat === c.id ? "on" : ""}" type="button" data-cat="${c.id}" aria-pressed="${recipeFilter.cat === c.id}">${c.t}</button>`).join("")}
+      </div>
+      <div class="chips" role="group" aria-label="Фильтры" style="margin-top:0">
+        ${RTAGS.map((t) => { const on = recipeFilter.tags.includes(t.id); return `<button class="chip small ${on ? "on" : ""}" type="button" data-tag="${t.id}" aria-pressed="${on}">${t.t}</button>`; }).join("")}
+      </div>
+
+      ${shown.length ? shown.map((r) => {
+        const locked = !r.free && !premium;
+        return `
+          <button class="recipe-card" type="button" data-rid="${r.id}">
+            <div class="rc-main">
+              <div class="rc-title">${esc(r.title)}</div>
+              <div class="rc-meta">${fmt(r.kcal)} ккал · Б ${fmt(r.protein)} · Ж ${fmt(r.fat)} · У ${fmt(r.carbs)}</div>
+            </div>
+            <div class="rc-side">
+              ${locked ? LOCK : `<span class="rc-time">${CLOCK}${r.minutes} мин</span>`}
+            </div>
+          </button>`;
+      }).join("") : `<section class="card empty"><p class="note muted" style="margin:0">Нет рецептов с такими фильтрами.</p></section>`}
+      ${premium ? "" : `<p class="small muted" style="text-align:center;margin:12px 0 4px">Открыто ${list.filter((r) => r.free).length} из ${list.length}. Все рецепты — в Премиуме.</p>`}`;
+
+    root.querySelectorAll("[data-cat]").forEach((b) => b.addEventListener("click", () => {
+      haptic("select"); recipeFilter.cat = b.dataset.cat; renderRecipes();
+    }));
+    root.querySelectorAll("[data-tag]").forEach((b) => b.addEventListener("click", () => {
+      haptic("select");
+      const t = b.dataset.tag;
+      recipeFilter.tags = recipeFilter.tags.includes(t) ? recipeFilter.tags.filter((x) => x !== t) : [...recipeFilter.tags, t];
+      renderRecipes();
+    }));
+    root.querySelectorAll("[data-rid]").forEach((b) => b.addEventListener("click", () => {
+      haptic();
+      const r = list.find((x) => String(x.id) === b.dataset.rid);
+      if (!r.free && !hasPremiumAccess()) return renderPaywall();
+      renderCatalogRecipe(r);
+    }));
+    document.getElementById("chef").addEventListener("click", () => {
+      haptic();
+      if (!hasPremiumAccess()) return renderPaywall();
+      renderChef();
+    });
+  }
+
+  // Общий вид страницы рецепта (для каталога и для ИИ-повара)
+  function renderRecipeView(v) {
+    setBack(v.onBack);
+    let meal = v.meal || defaultMeal();
+
+    function draw() {
+      app.innerHTML = `
+        ${v.badge ? `<div class="pill" style="align-self:flex-start;margin-bottom:10px">${v.badge}</div>` : ""}
+        <h2 class="q-title display" style="font-size:24px;margin:4px 0 8px">${esc(v.title)}</h2>
+        <div class="small muted" style="display:flex;gap:12px;align-items:center;margin-bottom:14px">
+          <span class="rc-time">${CLOCK}${v.minutes} мин</span><span>${esc(v.portionText)}</span>
+        </div>
+        <div class="totals">
+          <div><div class="v display" style="color:var(--accent)">${fmt(v.kcal)}</div><div class="k muted">ккал</div></div>
+          <div><div class="v">${fmt(v.protein)} г</div><div class="k" style="color:var(--protein)">Белки</div></div>
+          <div><div class="v">${fmt(v.fat)} г</div><div class="k" style="color:var(--fat)">Жиры</div></div>
+          <div><div class="v">${fmt(v.carbs)} г</div><div class="k" style="color:var(--carbs)">Углеводы</div></div>
+        </div>
+        <div class="section-title"><span>Ингредиенты</span><span class="muted">${esc(v.ingredientsNote || "")}</span></div>
+        <section class="card ingr">
+          ${v.ingredients.map((i) => `<div class="kv"><span>${esc(i.name)}</span><span class="muted">${esc(i.amount)}</span></div>`).join("")}
+        </section>
+        <div class="section-title"><span>Приготовление</span></div>
+        <ol class="steps">${v.steps.map((s) => `<li>${esc(s)}</li>`).join("")}</ol>
+
+        <div class="section-title" style="margin-top:14px"><span>Добавить в дневник</span></div>
+        <div class="chips" role="group" aria-label="Приём пищи" style="margin-top:0">
+          ${MEALS.map((m) => `<button class="chip ${m.id === meal ? "on" : ""}" type="button" data-meal="${m.id}" aria-pressed="${m.id === meal}">${m.t}</button>`).join("")}
+        </div>
+        <div class="stack" style="margin-top:4px">
+          <button class="primary" id="add-recipe" type="button">Добавить · ${fmt(v.kcal)} ккал</button>
+          ${v.extraButton ? `<button class="secondary" id="extra" type="button">${v.extraButton.text}</button>` : ""}
+        </div>`;
+
+      app.querySelectorAll("[data-meal]").forEach((b) =>
+        b.addEventListener("click", () => { haptic("select"); meal = b.dataset.meal; draw(); })
+      );
+      if (v.extraButton) document.getElementById("extra").addEventListener("click", () => v.extraButton.onClick(meal));
+
+      const addBtn = document.getElementById("add-recipe");
+      addBtn.addEventListener("click", async () => {
+        addBtn.disabled = true;
+        addBtn.textContent = "Добавляю…";
+        try {
+          const data = await api("/entries", {
+            method: "POST",
+            body: {
+              date: state.date, meal, source: v.source,
+              items: [{ name: v.title, grams: v.grams, kcal: v.kcal, protein: v.protein, fat: v.fat, carbs: v.carbs }],
+            },
+          });
+          state.entries = data.entries;
+          haptic("success");
+          renderHome();
+        } catch (e) {
+          haptic("error");
+          addBtn.disabled = false;
+          addBtn.textContent = `Добавить · ${fmt(v.kcal)} ккал`;
+          showAlert("Не получилось добавить. Попробуйте ещё раз.");
+        }
+      });
+    }
+
+    draw();
+  }
+
+  function renderCatalogRecipe(r) {
+    const portions = r.servings === 1 ? "1 порция" : r.servings >= 2 && r.servings <= 4 ? `${r.servings} порции` : `${r.servings} порций`;
+    renderRecipeView({
+      title: r.title, minutes: r.minutes, source: "recipe",
+      portionText: `порция ≈ ${fmt(r.grams)} г`,
+      grams: r.grams, kcal: r.kcal, protein: r.protein, fat: r.fat, carbs: r.carbs,
+      ingredientsNote: `на ${portions}`,
+      ingredients: r.ingredients.map((i) => ({ name: i.name, amount: `${fmt(i.g)} г${i.note ? ` (${i.note})` : ""}` })),
+      steps: r.steps,
+      meal: ["breakfast", "lunch", "dinner", "snack"].includes(r.cat) ? r.cat : undefined,
+      onBack: () => renderRecipes(),
+    });
+  }
+
+  // ---------- ИИ-повар ----------
+  function renderChef(prefMeal, prefWishes) {
+    setBack(() => renderRecipes());
+    let meal = prefMeal || defaultMeal();
+    const left = leftToday();
+
+    function draw() {
+      const wishes = document.getElementById("wishes")?.value ?? prefWishes ?? "";
+      app.innerHTML = `
+        <h2 class="q-title display" style="margin-top:4px">ИИ-повар</h2>
+        <p class="q-sub">${left.kcal > 0
+          ? `На сегодня осталось ${fmt(left.kcal)} ккал и ${fmt(Math.max(0, left.protein))} г белка. Подберу блюдо, которое впишется в норму.`
+          : "Норма на сегодня уже выполнена — подберу лёгкий вариант."}</p>
+        <div class="label" style="margin-top:0">Для какого приёма пищи</div>
+        <div class="chips" role="group" aria-label="Приём пищи" style="margin-top:0">
+          ${MEALS.map((m) => `<button class="chip ${m.id === meal ? "on" : ""}" type="button" data-meal="${m.id}" aria-pressed="${m.id === meal}">${m.t}</button>`).join("")}
+        </div>
+        <label class="label" for="wishes">Пожелания (необязательно)</label>
+        <input class="text-input" id="wishes" type="text" maxlength="200" autocomplete="off" value="${esc(wishes)}" placeholder="Например: из курицы, без молочного, за 15 минут">
+        <div class="grow"></div>
+        <button class="primary" id="go" type="button">Подобрать рецепт</button>`;
+
+      app.querySelectorAll("[data-meal]").forEach((b) =>
+        b.addEventListener("click", () => { haptic("select"); meal = b.dataset.meal; draw(); })
+      );
+      document.getElementById("go").addEventListener("click", () =>
+        cook(meal, document.getElementById("wishes").value.trim(), [])
+      );
+    }
+
+    draw();
+  }
+
+  async function cook(meal, wishes, seen) {
+    setBack(null);
+    app.innerHTML = `
+      <div class="loading" style="margin-top:28vh">
+        <div class="spinner" aria-hidden="true"></div>
+        <div>ИИ-повар придумывает блюдо…</div>
+        <div class="small muted">Обычно 5–15 секунд</div>
+      </div>`;
+    try {
+      const data = await api("/recipes/suggest", {
+        method: "POST",
+        body: { date: state.date, meal, wishes, avoid: seen.join(", ") },
+      });
+      const r = data.recipe;
+      haptic("success");
+      renderRecipeView({
+        badge: "ИИ-повар",
+        title: r.title, minutes: r.minutes, source: "ai_recipe",
+        portionText: `порция ≈ ${fmt(r.grams)} г`,
+        grams: r.grams, kcal: r.kcal, protein: r.protein, fat: r.fat, carbs: r.carbs,
+        ingredientsNote: "на 1 порцию",
+        ingredients: r.ingredients,
+        steps: r.steps,
+        meal,
+        onBack: () => renderChef(meal, wishes),
+        extraButton: { text: "Другой вариант", onClick: (m) => cook(m, wishes, [...seen, r.title].slice(-6)) },
+      });
+    } catch (e) {
+      haptic("error");
+      if (e.code === "premium") return renderPaywall();
+      renderChef(meal, wishes);
+      showAlert(e.code === "daily_limit"
+        ? "На сегодня лимит подборов исчерпан. Загляните завтра или выберите рецепт из каталога."
+        : "ИИ-повар не ответил. Попробуйте ещё раз через минуту.");
+    }
+  }
+
   // ---------- Запуск ----------
   function renderMessage(title, text, retry) {
     setBack(null);
@@ -1048,7 +1662,8 @@
   }
 
   async function start() {
-    app.innerHTML = `<div class="grow" style="display:flex;align-items:center;justify-content:center"><div class="spinner" aria-label="Загрузка"></div></div>`;
+    const splashStart = Date.now();
+    renderSplash();
 
     if (!tg || !tg.initData) {
       return renderMessage("Откройте через Telegram", "Hayanmi работает внутри Telegram. Найдите бота @hayanmi_bot и нажмите кнопку «Hayanmi».", false);
@@ -1057,6 +1672,9 @@
     state.date = localDate();
     try {
       await loadState();
+      // Даём заставке доиграть, но не держим дольше ~1 секунды
+      const wait = 1000 - (Date.now() - splashStart);
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
     } catch (e) {
       if (e.code === "no_db") {
         return renderMessage("Сервер настраивается", "База данных ещё не подключена. Загляните чуть позже.", true);
@@ -1096,9 +1714,14 @@
         renderHome();
       }
     } else {
-      draft = {};
-      stepIndex = 0;
-      renderStep();
+      const seen = await storage.get("intro_seen");
+      if (seen) {
+        draft = {};
+        stepIndex = 0;
+        renderStep();
+      } else {
+        renderIntro();
+      }
     }
   }
 

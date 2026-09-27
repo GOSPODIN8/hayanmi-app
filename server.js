@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import express from "express";
 import { Bot, InlineKeyboard } from "grammy";
 import * as db from "./db.js";
-import { recognizeFood, hasGemini } from "./gemini.js";
+import { recognizeFood, suggestRecipe, hasGemini } from "./gemini.js";
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const PORT = process.env.PORT || 3000;
@@ -149,6 +149,7 @@ api.use(async (req, res, next) => {
     const tz = req.get("x-timezone");
     await db.upsertUser(user, validTz(tz) ? tz : null);
     req.user = user;
+    req.tz = validTz(tz) ? tz : await db.getTimezone(user.id);
     next();
   } catch (e) {
     console.error("Ошибка базы:", e);
@@ -187,6 +188,7 @@ api.get("/state", async (req, res) => {
       premium: publicPremium(premium), prices: publicPrices(),
       water: { ml: waterMl, goal: waterGoal(profile) },
       reminders,
+      access: { premium: premium.active || isAdmin(req.user.id) },
     });
   } catch (e) {
     console.error("state:", e);
@@ -202,6 +204,8 @@ api.post("/profile", async (req, res) => {
   if (JSON.stringify(profile).length > 5000) return res.status(400).json({ ok: false, error: "too_big" });
   try {
     await db.saveProfile(req.user.id, profile);
+    const w = Number(profile.answers?.weight);
+    if (w >= 30 && w <= 300) await db.upsertWeight(req.user.id, localDate(req.tz), w);
     res.json({ ok: true });
   } catch (e) {
     console.error("profile:", e);
@@ -248,7 +252,8 @@ api.post("/entries", async (req, res) => {
     .filter((it) => it.grams > 0);
   if (clean.length === 0) return res.status(400).json({ ok: false, error: "empty" });
   try {
-    await db.addEntries(req.user.id, date, meal, clean, "photo");
+    const source = ["photo", "recipe", "ai_recipe"].includes(req.body.source) ? req.body.source : "photo";
+    await db.addEntries(req.user.id, date, meal, clean, source);
     if (typeof pendingId === "string" && /^\d+$/.test(pendingId)) await db.deletePending(req.user.id, pendingId);
     res.json({ ok: true, entries: await db.getEntries(req.user.id, date) });
   } catch (e) {
@@ -270,6 +275,82 @@ api.post("/water", async (req, res) => {
   } catch (e) {
     console.error("water:", e);
     res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
+api.post("/weight", async (req, res) => {
+  const { date, weight } = req.body || {};
+  const w = Math.round(Number(weight) * 10) / 10;
+  if (!isDate(date) || !(w >= 30 && w <= 300)) return res.status(400).json({ ok: false, error: "bad_request" });
+  try {
+    await db.upsertWeight(req.user.id, date, w);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("weight:", e);
+    res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
+api.get("/progress", async (req, res) => {
+  const date = isDate(req.query.date) ? req.query.date : localDate(req.tz);
+  try {
+    const [weights, week, streakDays, profile] = await Promise.all([
+      db.getWeights(req.user.id),
+      db.caloriesWeek(req.user.id, date),
+      db.streak(req.user.id, date),
+      db.getProfile(req.user.id),
+    ]);
+    // У тех, кто прошёл анкету до появления прогресса, берём вес из анкеты
+    if (!weights.length && profile?.answers?.weight) {
+      weights.push({ date: String(profile.savedAt || "").slice(0, 10) || date, weight: Number(profile.answers.weight) });
+    }
+    res.json({ ok: true, weights, week, streak: streakDays });
+  } catch (e) {
+    console.error("progress:", e);
+    res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
+// ---------- ИИ-повар ----------
+const RECIPE_DAILY_LIMIT = Number(process.env.RECIPE_DAILY_LIMIT ?? 15);
+const MEAL_SHARE = { breakfast: 0.25, lunch: 0.35, dinner: 0.3, snack: 0.12 };
+const MEAL_RU = { breakfast: "завтрак", lunch: "обед", dinner: "ужин", snack: "перекус" };
+
+api.post("/recipes/suggest", async (req, res) => {
+  if (!hasGemini()) return res.status(503).json({ ok: false, error: "no_ai" });
+  const { date, meal, wishes, avoid } = req.body || {};
+  if (!isDate(date) || !MEALS.has(meal)) return res.status(400).json({ ok: false, error: "bad_request" });
+  try {
+    const premium = await db.getPremium(req.user.id);
+    if (!premium.active && !isAdmin(req.user.id)) return res.status(402).json({ ok: false, error: "premium" });
+    if ((await db.countUsageDay(req.user.id, "recipe")) >= RECIPE_DAILY_LIMIT) {
+      return res.status(429).json({ ok: false, error: "daily_limit" });
+    }
+    const profile = await db.getProfile(req.user.id);
+    if (!profile?.result) return res.status(400).json({ ok: false, error: "no_profile" });
+
+    // Сколько осталось на сегодня и сколько разумно отдать на этот приём пищи
+    const entries = await db.getEntries(req.user.id, date);
+    const eatenKcal = entries.reduce((s, e) => s + e.kcal, 0);
+    const eatenP = entries.reduce((s, e) => s + e.protein, 0);
+    const leftKcal = profile.result.kcal - eatenKcal;
+    const leftP = profile.result.protein - eatenP;
+    const share = Math.round(profile.result.kcal * MEAL_SHARE[meal] * 1.15);
+    const targetKcal = Math.max(150, Math.min(share, leftKcal > 0 ? leftKcal : 150));
+    const minProtein = Math.max(5, Math.min(45, Math.round(leftP > 0 ? Math.min(leftP, targetKcal * 0.3 / 4) : 10)));
+
+    const recipe = await suggestRecipe({
+      meal: MEAL_RU[meal],
+      targetKcal: Math.round(targetKcal / 10) * 10,
+      minProtein,
+      wishes: typeof wishes === "string" ? wishes.trim() : "",
+      avoid: typeof avoid === "string" ? avoid : "",
+    });
+    await db.addUsage(req.user.id, "recipe");
+    res.json({ ok: true, recipe, target: { kcal: Math.round(targetKcal), leftKcal: Math.round(leftKcal) } });
+  } catch (e) {
+    console.error("recipe:", e);
+    res.status(502).json({ ok: false, error: "ai_error" });
   }
 });
 

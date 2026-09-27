@@ -70,6 +70,14 @@ export async function migrate() {
       PRIMARY KEY (user_id, kind, local_date)
     );
 
+    CREATE TABLE IF NOT EXISTS weight_logs (
+      user_id     BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+      entry_date  DATE NOT NULL,
+      weight      REAL NOT NULL,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (user_id, entry_date)
+    );
+
     CREATE TABLE IF NOT EXISTS pending_meals (
       id          BIGSERIAL PRIMARY KEY,
       user_id     BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
@@ -391,4 +399,61 @@ export async function markBlocked(userId) {
 
 export async function cleanupReminderLog() {
   await pool.query(`DELETE FROM reminder_log WHERE local_date < current_date - 7`);
+}
+
+// ---------- Прогресс ----------
+export async function upsertWeight(userId, date, weight) {
+  await pool.query(
+    `INSERT INTO weight_logs (user_id, entry_date, weight) VALUES ($1, $2, $3)
+     ON CONFLICT (user_id, entry_date) DO UPDATE SET weight = EXCLUDED.weight, created_at = now()`,
+    [userId, date, weight]
+  );
+}
+
+export async function getWeights(userId, days = 180) {
+  const { rows } = await pool.query(
+    `SELECT to_char(entry_date, 'YYYY-MM-DD') AS date, weight FROM weight_logs
+     WHERE user_id = $1 AND entry_date >= current_date - $2::int
+     ORDER BY entry_date`,
+    [userId, days]
+  );
+  return rows;
+}
+
+// Калории по дням за последние 7 дней (включая сегодня)
+export async function caloriesWeek(userId, date) {
+  const { rows } = await pool.query(
+    `SELECT to_char(d::date, 'YYYY-MM-DD') AS date, COALESCE(sum(f.kcal), 0)::float AS kcal
+     FROM generate_series($2::date - 6, $2::date, interval '1 day') AS d
+     LEFT JOIN food_entries f ON f.user_id = $1 AND f.entry_date = d::date
+     GROUP BY d ORDER BY d`,
+    [userId, date]
+  );
+  return rows;
+}
+
+// Сколько дней подряд есть записи в дневнике (если сегодня пусто — считаем до вчера)
+export async function streak(userId, date) {
+  const { rows } = await pool.query(
+    `SELECT DISTINCT to_char(entry_date, 'YYYY-MM-DD') AS d FROM food_entries
+     WHERE user_id = $1 AND entry_date <= $2::date AND entry_date > $2::date - 400
+     ORDER BY d DESC`,
+    [userId, date]
+  );
+  const days = new Set(rows.map((r) => r.d));
+  const cur = new Date(date + "T00:00:00Z");
+  const iso = (d) => d.toISOString().slice(0, 10);
+  if (!days.has(iso(cur))) cur.setUTCDate(cur.getUTCDate() - 1);
+  let n = 0;
+  while (days.has(iso(cur))) { n++; cur.setUTCDate(cur.getUTCDate() - 1); }
+  return n;
+}
+
+// Сколько раз пользователь использовал ИИ за последние сутки
+export async function countUsageDay(userId, kind) {
+  const { rows } = await pool.query(
+    `SELECT count(*)::int AS n FROM ai_usage WHERE user_id = $1 AND kind = $2 AND created_at > now() - interval '1 day'`,
+    [userId, kind]
+  );
+  return rows[0].n;
 }
