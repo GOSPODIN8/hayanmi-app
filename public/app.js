@@ -7,7 +7,20 @@
   if (tg) {
     tg.ready();
     tg.expand();
-    try { tg.setHeaderColor("#0E0F0C"); tg.setBackgroundColor("#0E0F0C"); } catch (e) {}
+    try { tg.setHeaderColor("#0E0F0C"); tg.setBackgroundColor("#0E0F0C"); tg.setBottomBarColor?.("#0E0F0C"); } catch (e) {}
+
+    const can = (v) => typeof tg.isVersionAtLeast === "function" && tg.isVersionAtLeast(v);
+    const isPhone = ["ios", "android", "android_x"].includes(tg.platform);
+
+    // Во весь экран — только на телефонах (Bot API 8.0+)
+    if (isPhone && can("8.0")) {
+      try { tg.requestFullscreen(); } catch (e) {}
+      try { tg.lockOrientation(); } catch (e) {}
+    }
+    // Чтобы приложение не закрывалось свайпом вниз, пока двигаешь ползунки (Bot API 7.7+)
+    if (can("7.7")) {
+      try { tg.disableVerticalSwipes(); } catch (e) {}
+    }
   }
 
   // ---------- Хранилище ----------
