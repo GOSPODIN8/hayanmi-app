@@ -375,6 +375,7 @@
 
   // ---------- Вода ----------
   const DROP = `<svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3C12 3 6 10 6 14.5A6 6 0 0 0 18 14.5C18 10 12 3 12 3Z" fill="none" stroke="#86B6FF" stroke-width="2" stroke-linejoin="round"/></svg>`;
+  const reduceMotion = () => { try { return matchMedia("(prefers-reduced-motion: reduce)").matches; } catch (e) { return false; } };
   const liters = (ml) => (ml / 1000).toLocaleString("ru-RU", { maximumFractionDigits: 2 });
 
   function waterHtml() {
@@ -474,7 +475,10 @@
           <div class="hello muted">${firstName ? "Привет, " + esc(firstName) + "!" : "Привет!"}</div>
           <h1 class="display">Сегодня</h1>
         </div>
-        <button class="badge ${state.premium?.active ? "on" : ""}" id="premium" type="button">Премиум</button>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button class="badge ${state.premium?.active ? "on" : ""}" id="premium" type="button">Премиум</button>
+          <button class="icon-btn round" id="profile-btn" type="button" aria-label="Профиль">${TAB_ICONS.profile}</button>
+        </div>
       </header>
 
       <section class="card ring-wrap" aria-label="Калории за день">
@@ -508,6 +512,7 @@
     bindTabs();
 
     const openSub = () => { haptic(); state.premium?.active ? renderSubscription() : renderPaywall(); };
+    document.getElementById("profile-btn").addEventListener("click", () => { haptic(); renderProfile(); });
     document.getElementById("premium").addEventListener("click", openSub);
     const promoBtn = document.getElementById("promo-btn");
     if (promoBtn) promoBtn.addEventListener("click", openSub);
@@ -633,7 +638,7 @@
 
   // ---------- Профиль и напоминания ----------
   function renderProfile() {
-    setBack(null);
+    setBack(() => renderHome());
     const a = state.profile.answers;
     const r = state.profile.result;
     const rem = JSON.parse(JSON.stringify(state.reminders || { meals: true, water: true, times: { breakfast: "09:00", lunch: "13:30", dinner: "19:00" } }));
@@ -670,7 +675,7 @@
 
       <button class="primary" id="save-rem" type="button">Сохранить напоминания</button>
       <button class="secondary" id="sub-btn" type="button" style="margin-top:10px">${state.premium?.active ? "Моя подписка" : "Hayanmi Премиум"}</button>
-      ${tabbarHtml("profile")}`;
+      ${tabbarHtml("")}`;
     bindTabs();
     document.getElementById("sub-btn").addEventListener("click", () => {
       haptic();
@@ -743,7 +748,18 @@
   const dateText = (iso) => new Date(iso).toLocaleDateString("ru-RU", { day: "numeric", month: "long", year: "numeric" });
 
   function renderPaywall(reason) {
-    setBack(() => renderHome());
+    let first = true;
+    // Плавное закрытие: экран уезжает вниз, потом открываем главную
+    const close = async () => {
+      haptic();
+      const pw = document.getElementById("paywall");
+      if (pw && !pw.classList.contains("leave")) {
+        pw.classList.add("leave");
+        await new Promise((r) => setTimeout(r, reduceMotion() ? 0 : 220));
+      }
+      renderHome();
+    };
+    setBack(close);
     const prices = state.prices || { month: 250, year: 1500, trialDays: 3 };
     const perMonth = Math.round(prices.year / 12);
     const save = Math.round((1 - prices.year / (prices.month * 12)) * 100);
@@ -752,6 +768,8 @@
 
     function draw() {
       app.innerHTML = `
+        <div class="paywall ${first ? "enter" : ""}" id="paywall">
+        <div class="pw-glow" aria-hidden="true"></div>
         <div style="display:flex;justify-content:space-between;align-items:center">
           ${LOGO}
           <button class="icon-btn close" id="close" type="button" aria-label="Закрыть">${ICON_X}</button>
@@ -786,14 +804,15 @@
           ${trial ? `<button class="secondary" id="trial" type="button">Попробовать ${prices.trialDays} дня бесплатно</button>` : ""}
           <button class="link-btn" id="later" type="button">Не сейчас</button>
           <div class="small muted" style="text-align:center">Условия — команда /terms в чате с ботом · помощь — /paysupport</div>
+        </div>
         </div>`;
+      first = false;
 
       app.querySelectorAll("[data-plan]").forEach((b) =>
         b.addEventListener("click", () => { haptic("select"); plan = b.dataset.plan; draw(); })
       );
       document.getElementById("buy").addEventListener("click", (e) => buy(plan, e.currentTarget));
       if (trial) document.getElementById("trial").addEventListener("click", startTrial);
-      const close = () => { haptic(); renderHome(); };
       document.getElementById("close").addEventListener("click", close);
       document.getElementById("later").addEventListener("click", close);
     }
@@ -1024,26 +1043,40 @@
     progress: `<svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19L10 12L14 15L20 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
     recipes: `<svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5.5C5 4.7 5.7 4 6.5 4H19V18H6.5C5.7 18 5 18.7 5 19.5M5 5.5V19.5M5 19.5C5 20.3 5.7 21 6.5 21H19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M9 8H15M9 11.5H13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`,
     profile: `<svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4" fill="none" stroke="currentColor" stroke-width="2"/><path d="M4 20C5 16 8 14 12 14C16 14 19 16 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`,
+    coach: `<svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5H19A1 1 0 0 1 20 6V15A1 1 0 0 1 19 16H10L6 19.5V16H5A1 1 0 0 1 4 15V6A1 1 0 0 1 5 5Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M8.5 10.5H8.51M12 10.5H12.01M15.5 10.5H15.51" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/></svg>`,
   };
   const TABS = [
     { id: "home", t: "Главная" },
     { id: "progress", t: "Прогресс" },
     { id: "plus" },
     { id: "recipes", t: "Рецепты" },
-    { id: "profile", t: "Профиль" },
+    { id: "coach", t: "Коуч" },
   ];
 
+  // Залитые иконки для активной вкладки — как в приложениях Apple
+  const TAB_ICONS_ON = {
+    home: `<svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 11.2L12 3.8L20.5 11.2V19.5A1.5 1.5 0 0 1 19 21H14.5V15H9.5V21H5A1.5 1.5 0 0 1 3.5 19.5Z" fill="currentColor"/></svg>`,
+    progress: `<svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="5" fill="currentColor"/><path d="M6.5 16L10 12L13 14L17.5 8.5" fill="none" stroke="#0E0F0C" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+    recipes: `<svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 3H19.5V17H6.5A1.5 1.5 0 0 0 5 18.5V4.5A1.5 1.5 0 0 1 6.5 3Z" fill="currentColor"/><path d="M5 18.5A1.5 1.5 0 0 0 6.5 20H19.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M9 7.5H15.5M9 11H13.5" stroke="#0E0F0C" stroke-width="2" stroke-linecap="round"/></svg>`,
+    coach: `<svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4H19A2 2 0 0 1 21 6V15A2 2 0 0 1 19 17H10.5L6 20.5V17H5A2 2 0 0 1 3 15V6A2 2 0 0 1 5 4Z" fill="currentColor"/><path d="M8.5 10.5H8.51M12 10.5H12.01M15.5 10.5H15.51" stroke="#0E0F0C" stroke-width="2.6" stroke-linecap="round"/></svg>`,
+  };
+
   function tabbarHtml(active) {
+    const tabs = TABS.filter((t) => t.id !== "plus");
     return `
       <div class="tab-spacer"></div>
       <nav class="tabbar" aria-label="Разделы">
-        ${TABS.map((t) => t.id === "plus"
-          ? `<button class="tab-plus" id="tab-plus" type="button" aria-label="Добавить еду по фото">
-               <svg width="26" height="26" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5V19M5 12H19" stroke="#0E0F0C" stroke-width="2.6" stroke-linecap="round"/></svg>
-             </button>`
-          : `<button class="tab ${t.id === active ? "on" : ""}" type="button" data-tab="${t.id}" ${t.id === active ? 'aria-current="page"' : ""}>
-               ${TAB_ICONS[t.id]}<span>${t.t}</span>
-             </button>`).join("")}
+        <div class="tabs-glass">
+          ${tabs.map((t) => {
+            const on = t.id === active;
+            return `<button class="tab ${on ? "on" : ""}" type="button" data-tab="${t.id}" ${on ? 'aria-current="page"' : ""}>
+                ${on ? TAB_ICONS_ON[t.id] : TAB_ICONS[t.id]}<span>${t.t}</span>
+              </button>`;
+          }).join("")}
+        </div>
+        <button class="tab-plus" id="tab-plus" type="button" aria-label="Добавить еду по фото">
+          <svg width="26" height="26" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5V19M5 12H19" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/></svg>
+        </button>
       </nav>
       <input id="file" type="file" accept="image/*" hidden>`;
   }
@@ -1052,7 +1085,7 @@
     app.querySelectorAll("[data-tab]").forEach((b) =>
       b.addEventListener("click", () => {
         haptic("select");
-        const go = { home: renderHome, progress: renderProgress, recipes: renderRecipes, profile: renderProfile }[b.dataset.tab];
+        const go = { home: renderHome, progress: renderProgress, recipes: renderRecipes, coach: renderCoach }[b.dataset.tab];
         if (go) go();
       })
     );
@@ -1380,6 +1413,157 @@
       renderStep();
     });
     document.getElementById("later").addEventListener("click", () => renderProgress());
+  }
+
+  // ---------- ИИ-коуч ----------
+  const PERSONA_INFO = {
+    alina: { name: "Алина", about: "Тёплая и поддерживающая. Хвалит за маленькие шаги.", color: "#86B6FF" },
+    max: { name: "Макс", about: "Прямой спортивный тренер. Коротко и по делу.", color: "#D4F25A" },
+    karim: { name: "Карим", about: "Спокойный нутрициолог. Объясняет, почему это работает.", color: "#E6DFCC" },
+    sonya: { name: "Соня", about: "С юмором, но советы серьёзные.", color: "#F4A259" },
+  };
+  const QUICK = ["Оцени мой день", "Что съесть на ужин?", "Как добрать белок?", "Почему вес стоит?"];
+  const coach = { loaded: false, persona: "alina", messages: [], freeLeft: null, sending: false };
+
+  const avatar = (id, size = 40) => {
+    const p = PERSONA_INFO[id] || PERSONA_INFO.alina;
+    return `<span class="avatar" style="width:${size}px;height:${size}px;background:${p.color};font-size:${Math.round(size * 0.42)}px">${p.name[0]}</span>`;
+  };
+  const msgHtml = (m) => `<div class="msg ${m.role === "user" ? "me" : "coach"}">${esc(m.text)}</div>`;
+
+  async function renderCoach() {
+    setBack(() => renderHome());
+    if (!coach.loaded) {
+      app.innerHTML = `<div class="loading" style="margin-top:30vh"><div class="spinner" aria-label="Загрузка"></div></div>`;
+      try {
+        const data = await api("/coach");
+        Object.assign(coach, { loaded: true, persona: data.persona, messages: data.messages, freeLeft: data.freeLeft });
+      } catch (e) {
+        return renderMessage("Коуч недоступен", "Не получилось загрузить чат. Проверьте интернет.", false);
+      }
+    }
+    drawCoach();
+  }
+
+  function drawCoach() {
+    const p = PERSONA_INFO[coach.persona] || PERSONA_INFO.alina;
+    const locked = coach.freeLeft === 0;
+    const firstName = tg?.initDataUnsafe?.user?.first_name;
+    const hello = `Привет${firstName ? ", " + firstName : ""}! Я ${p.name}, твой коуч по питанию. Я вижу твой дневник и норму — спрашивай что угодно про еду, вес и привычки.`;
+
+    app.innerHTML = `
+      <header class="coach-head">
+        ${avatar(coach.persona, 44)}
+        <div style="flex:1;min-width:0">
+          <div style="font-size:17px;font-weight:700">${p.name}</div>
+          <div class="small muted">ИИ-коуч · видит твой дневник</div>
+        </div>
+        <button class="badge" id="change" type="button">Сменить</button>
+      </header>
+
+      <div class="chat" id="chat">
+        <div class="msg coach">${esc(hello)}</div>
+        ${coach.messages.map(msgHtml).join("")}
+        ${coach.sending ? `<div class="msg coach typing" aria-label="Коуч печатает"><span></span><span></span><span></span></div>` : ""}
+      </div>
+
+      ${!coach.messages.length && !coach.sending && !locked
+        ? `<div class="quick">${QUICK.map((q) => `<button class="chip small" type="button" data-q="${esc(q)}">${esc(q)}</button>`).join("")}</div>`
+        : ""}
+
+      <div class="grow"></div>
+      ${locked
+        ? `<section class="promo" style="margin-top:12px">
+             <div class="promo-title display">Бесплатные сообщения закончились</div>
+             <p class="promo-text">С Hayanmi Премиум общайся с коучем без ограничений — здесь и прямо в чате с ботом.</p>
+             <button class="primary promo-btn" id="get-premium" type="button">Подключить Премиум</button>
+           </section>`
+        : `<div class="composer">
+             ${coach.freeLeft !== null ? `<div class="small muted" style="margin:0 4px 8px">Бесплатных сообщений осталось: ${coach.freeLeft}</div>` : ""}
+             <div class="composer-row">
+               <label for="msg" class="sr-only">Сообщение коучу</label>
+               <textarea id="msg" rows="1" maxlength="1000" placeholder="Спроси коуча…" ${coach.sending ? "disabled" : ""}></textarea>
+               <button class="send" id="send" type="button" aria-label="Отправить" ${coach.sending ? "disabled" : ""}>
+                 <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12H19M13 6L19 12L13 18" fill="none" stroke="#0E0F0C" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+               </button>
+             </div>
+           </div>`}`;
+
+    window.scrollTo(0, document.body.scrollHeight);
+
+    document.getElementById("change").addEventListener("click", () => { haptic(); renderCoachPicker(); });
+    app.querySelectorAll("[data-q]").forEach((b) => b.addEventListener("click", () => sendCoach(b.dataset.q)));
+    const gp = document.getElementById("get-premium");
+    if (gp) gp.addEventListener("click", () => { haptic(); renderPaywall(); });
+
+    const input = document.getElementById("msg");
+    if (input) {
+      const grow = () => { input.style.height = "auto"; input.style.height = Math.min(120, input.scrollHeight) + "px"; };
+      input.addEventListener("input", grow);
+      document.getElementById("send").addEventListener("click", () => sendCoach(input.value));
+    }
+  }
+
+  async function sendCoach(text) {
+    text = String(text || "").trim();
+    if (!text || coach.sending) return;
+    haptic("select");
+    coach.messages.push({ role: "user", text });
+    coach.sending = true;
+    drawCoach();
+    try {
+      const data = await api("/coach/send", { method: "POST", body: { text, date: state.date } });
+      coach.messages.push({ role: "coach", text: data.reply });
+      coach.freeLeft = data.freeLeft;
+      haptic("success");
+    } catch (e) {
+      coach.messages.pop(); // вопрос не ушёл — убираем
+      if (e.code === "premium") coach.freeLeft = 0;
+      else showAlert(e.code === "daily_limit"
+        ? "На сегодня лимит сообщений коучу исчерпан. Продолжим завтра!"
+        : "Коуч не ответил. Попробуйте ещё раз через минуту.");
+    } finally {
+      coach.sending = false;
+      drawCoach();
+    }
+  }
+
+  function renderCoachPicker() {
+    setBack(() => drawCoach());
+    app.innerHTML = `
+      <h2 class="q-title display" style="margin-top:4px">Выбери коуча</h2>
+      <p class="q-sub">Все коучи видят твой дневник и дают советы под твою норму. Отличается только характер.</p>
+      <div class="options">
+        ${Object.entries(PERSONA_INFO).map(([id, p]) => `
+          <button class="option persona ${id === coach.persona ? "selected" : ""}" type="button" data-persona="${id}">
+            ${avatar(id, 44)}
+            <span style="display:flex;flex-direction:column;gap:4px"><span class="t">${p.name}</span><span class="d">${p.about}</span></span>
+          </button>`).join("")}
+      </div>
+      <button class="link-btn" id="clear" type="button" style="margin-top:14px">Очистить историю переписки</button>`;
+
+    app.querySelectorAll("[data-persona]").forEach((b) => b.addEventListener("click", async () => {
+      haptic("select");
+      const id = b.dataset.persona;
+      try {
+        await api("/coach/persona", { method: "POST", body: { persona: id } });
+        coach.persona = id;
+        drawCoach();
+      } catch (e) {
+        showAlert("Не получилось сменить коуча. Попробуйте ещё раз.");
+      }
+    }));
+    document.getElementById("clear").addEventListener("click", async () => {
+      if (!(await showConfirm("Удалить всю переписку с коучем?"))) return;
+      try {
+        await api("/coach/clear", { method: "POST" });
+        coach.messages = [];
+        haptic("success");
+        drawCoach();
+      } catch (e) {
+        showAlert("Не получилось очистить. Попробуйте ещё раз.");
+      }
+    });
   }
 
   // ---------- Рецепты ----------

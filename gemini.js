@@ -130,3 +130,34 @@ export async function suggestRecipe({ meal, targetKcal, minProtein, wishes, avoi
     grams: Math.round(clamp(p.grams, 50, 1500)) || 300,
   };
 }
+
+// ---------- ИИ-коуч: обычный текстовый диалог ----------
+export async function chatGemini(systemText, history) {
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(MODEL)}:generateContent`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-goog-api-key": API_KEY },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: systemText }] },
+        contents: history.map((m) => ({ role: m.role === "user" ? "user" : "model", parts: [{ text: m.text }] })),
+        generationConfig: { temperature: 0.7 },
+      }),
+      signal: AbortSignal.timeout(60000),
+    }
+  );
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`Gemini ответил ${res.status}: ${body.slice(0, 500)}`);
+  }
+  const data = await res.json();
+  const parts = data?.candidates?.[0]?.content?.parts ?? [];
+  const text = parts.filter((p) => !p.thought && typeof p.text === "string").map((p) => p.text).join("").trim();
+  if (!text) throw new Error("Пустой ответ Gemini: " + JSON.stringify(data).slice(0, 300));
+  // Убираем markdown-разметку: в Telegram и в приложении показываем простой текст
+  return text
+    .replace(/\*\*(.+?)\*\*/g, "$1")
+    .replace(/^#{1,6}\s*/gm, "")
+    .replace(/^\s*[-*]\s+/gm, "• ")
+    .slice(0, 3000);
+}

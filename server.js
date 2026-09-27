@@ -6,6 +6,7 @@ import express from "express";
 import { Bot, InlineKeyboard } from "grammy";
 import * as db from "./db.js";
 import { recognizeFood, suggestRecipe, hasGemini } from "./gemini.js";
+import { PERSONAS, DEFAULT_PERSONA, coachAccess, coachReply } from "./coach.js";
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const PORT = process.env.PORT || 3000;
@@ -66,6 +67,12 @@ function localMinutes(tz) {
   const h = Number(parts.find((p) => p.type === "hour").value);
   const m = Number(parts.find((p) => p.type === "minute").value);
   return h * 60 + m;
+}
+// Время у пользователя в виде «19:54»
+function localTimeText(tz) {
+  return new Intl.DateTimeFormat("ru-RU", {
+    timeZone: validTz(tz) ? tz : DEFAULT_TZ, hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  }).format(new Date());
 }
 const toMin = (hhmm) => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3, 5));
 
@@ -351,6 +358,63 @@ api.post("/recipes/suggest", async (req, res) => {
   } catch (e) {
     console.error("recipe:", e);
     res.status(502).json({ ok: false, error: "ai_error" });
+  }
+});
+
+// ---------- ИИ-коуч ----------
+api.get("/coach", async (req, res) => {
+  try {
+    const premium = await db.getPremium(req.user.id);
+    const [persona, messages, access] = await Promise.all([
+      db.getCoach(req.user.id),
+      db.getCoachMessages(req.user.id, 40),
+      coachAccess(req.user.id, premium.active || isAdmin(req.user.id)),
+    ]);
+    res.json({
+      ok: true, persona: persona || DEFAULT_PERSONA, messages, freeLeft: access.freeLeft,
+      personas: Object.fromEntries(Object.entries(PERSONAS).map(([k, v]) => [k, v.name])),
+    });
+  } catch (e) {
+    console.error("coach:", e);
+    res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
+api.post("/coach/send", async (req, res) => {
+  if (!hasGemini()) return res.status(503).json({ ok: false, error: "no_ai" });
+  const text = typeof req.body?.text === "string" ? req.body.text.trim() : "";
+  const date = isDate(req.body?.date) ? req.body.date : localDate(req.tz);
+  if (!text || text.length > 1000) return res.status(400).json({ ok: false, error: "bad_text" });
+  try {
+    const premium = await db.getPremium(req.user.id);
+    const access = await coachAccess(req.user.id, premium.active || isAdmin(req.user.id));
+    if (!access.ok) return res.status(access.reason === "premium" ? 402 : 429).json({ ok: false, error: access.reason });
+    const { reply } = await coachReply(req.user.id, text, date, localTimeText(req.tz));
+    const after = await coachAccess(req.user.id, premium.active || isAdmin(req.user.id));
+    res.json({ ok: true, reply, freeLeft: after.freeLeft });
+  } catch (e) {
+    console.error("coach send:", e);
+    res.status(502).json({ ok: false, error: "ai_error" });
+  }
+});
+
+api.post("/coach/persona", async (req, res) => {
+  const p = req.body?.persona;
+  if (!PERSONAS[p]) return res.status(400).json({ ok: false, error: "bad_persona" });
+  try {
+    await db.setCoach(req.user.id, p);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
+api.post("/coach/clear", async (req, res) => {
+  try {
+    await db.clearCoachMessages(req.user.id);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: "server_error" });
   }
 });
 
@@ -740,6 +804,21 @@ bot.on("message:successful_payment", async (ctx) => {
   }
 });
 
+bot.command("coach", async (ctx) => {
+  const kb = new InlineKeyboard();
+  Object.entries(PERSONAS).forEach(([id, p], i) => { kb.text(p.name, `coach:${id}`); if (i % 2) kb.row(); });
+  await ctx.reply("Просто напиши мне вопрос о питании — отвечу как твой коуч. Выбери характер коуча:", { reply_markup: kb });
+});
+
+bot.callbackQuery(/^coach:(\w+)$/, async (ctx) => {
+  const id = ctx.match[1];
+  if (!PERSONAS[id] || !db.hasDb()) return ctx.answerCallbackQuery();
+  await db.upsertUser(ctx.from);
+  await db.setCoach(ctx.from.id, id);
+  await ctx.answerCallbackQuery({ text: `Твой коуч: ${PERSONAS[id].name}` });
+  await ctx.editMessageText(`Твой коуч теперь — ${PERSONAS[id].name}. Задавай вопросы прямо здесь, в чате.`);
+});
+
 bot.command("paysupport", (ctx) =>
   ctx.reply(
     "Вопросы по оплате Hayanmi Премиум:\n\n" +
@@ -784,6 +863,38 @@ bot.command("refund", async (ctx) => {
   }
 });
 
+// ---------- Коуч прямо в чате: любое текстовое сообщение (не команда) ----------
+bot.on("message:text", async (ctx) => {
+  const text = ctx.message.text.trim();
+  if (!text || text.startsWith("/")) return;
+  const userId = ctx.from.id;
+  const openKb = WEBAPP_URL ? { reply_markup: openAppKeyboard() } : {};
+  if (!db.hasDb() || !hasGemini()) return ctx.reply("Коуч временно недоступен. Попробуй чуть позже.");
+  try {
+    await db.upsertUser(ctx.from);
+    if (!(await db.getProfile(userId))) {
+      return ctx.reply("Сначала ответь на пару вопросов в приложении — тогда я смогу давать советы под тебя.", openKb);
+    }
+    const premium = await db.getPremium(userId);
+    const access = await coachAccess(userId, premium.active || isAdmin(userId));
+    if (!access.ok) {
+      return ctx.reply(access.reason === "premium"
+        ? "Бесплатные сообщения коучу закончились. С Hayanmi Премиум — общайся с коучем без ограничений: открой приложение и нажми «Премиум»."
+        : "На сегодня лимит сообщений коучу исчерпан. Продолжим завтра!", openKb);
+    }
+    await ctx.replyWithChatAction("typing");
+    const tz = await db.getTimezone(userId);
+    const { reply } = await coachReply(userId, text.slice(0, 1000), localDate(tz), localTimeText(tz));
+    const after = await coachAccess(userId, premium.active || isAdmin(userId));
+    const tail = after.freeLeft !== null && after.freeLeft <= 1
+      ? `\n\n(Бесплатных сообщений коучу осталось: ${after.freeLeft})` : "";
+    await ctx.reply(reply + tail);
+  } catch (e) {
+    console.error("coach chat:", e);
+    await ctx.reply("Не получилось ответить. Попробуй ещё раз через минуту.").catch(() => {});
+  }
+});
+
 bot.catch((err) => console.error("Ошибка бота:", err.error));
 
 // ---------- Запуск ----------
@@ -802,6 +913,7 @@ async function main() {
     { command: "start", description: "Открыть Hayanmi" },
     { command: "paysupport", description: "Помощь с оплатой" },
     { command: "terms", description: "Условия подписки" },
+    { command: "coach", description: "Сменить коуча" },
   ]);
   if (WEBAPP_URL) {
     await bot.api.setChatMenuButton({

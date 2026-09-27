@@ -78,6 +78,17 @@ export async function migrate() {
       PRIMARY KEY (user_id, entry_date)
     );
 
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS coach TEXT;
+
+    CREATE TABLE IF NOT EXISTS coach_messages (
+      id          BIGSERIAL PRIMARY KEY,
+      user_id     BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+      role        TEXT NOT NULL,
+      text        TEXT NOT NULL,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS coach_messages_user ON coach_messages (user_id, id);
+
     CREATE TABLE IF NOT EXISTS pending_meals (
       id          BIGSERIAL PRIMARY KEY,
       user_id     BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
@@ -456,4 +467,34 @@ export async function countUsageDay(userId, kind) {
     [userId, kind]
   );
   return rows[0].n;
+}
+
+// ---------- ИИ-коуч ----------
+export async function getCoach(userId) {
+  const { rows } = await pool.query(`SELECT coach FROM users WHERE telegram_id = $1`, [userId]);
+  return rows[0]?.coach ?? null;
+}
+
+export async function setCoach(userId, coach) {
+  await pool.query(`UPDATE users SET coach = $2 WHERE telegram_id = $1`, [userId, coach]);
+}
+
+export async function getCoachMessages(userId, limit = 40) {
+  const { rows } = await pool.query(
+    `SELECT role, text, created_at FROM (
+       SELECT id, role, text, created_at FROM coach_messages WHERE user_id = $1 ORDER BY id DESC LIMIT $2
+     ) t ORDER BY id`,
+    [userId, limit]
+  );
+  return rows.map((r) => ({ role: r.role, text: r.text, at: new Date(r.created_at).toISOString() }));
+}
+
+export async function addCoachMessages(userId, pairs) {
+  for (const [role, text] of pairs) {
+    await pool.query(`INSERT INTO coach_messages (user_id, role, text) VALUES ($1, $2, $3)`, [userId, role, text]);
+  }
+}
+
+export async function clearCoachMessages(userId) {
+  await pool.query(`DELETE FROM coach_messages WHERE user_id = $1`, [userId]);
 }
