@@ -82,3 +82,38 @@ button { font-family: inherit; cursor: pointer; }
 .tile .v { font-size: 20px; }
 .tile .k { font-size: 13px; color: var(--muted); }
 .stack { display: flex; flex-direction: column; gap: 10px; margin-top: 16px; }
+
+/* ---- Дневник ---- */
+.section-title { font-size: 15px; font-weight: 700; margin: 8px 2px 8px; display: flex; justify-content: space-between; }
+.section-title .muted { font-weight: 600; }
+.entry { display: flex; align-items: center; gap: 12px; padding: 12px 8px 12px 16px; border-radius: 16px; background: var(--card); margin-bottom: 6px; }
+.entry .info { flex: 1; min-width: 0; }
+.entry .name { font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.entry .meta { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.entry .kcal { font-size: 15px; font-weight: 700; }
+.icon-btn { width: 44px; height: 44px; border: none; border-radius: 22px; background: transparent; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.icon-btn:active { background: var(--card2); }
+.empty { text-align: center; padding: 22px 18px; }
+.quota { font-size: 13px; color: var(--muted); text-align: center; margin: 10px 0 14px; }
+.link-btn { background: none; border: none; color: var(--muted); font-size: 14px; font-weight: 600; padding: 12px; width: 100%; }
+
+/* ---- Фото ---- */
+.photo { width: 100%; max-height: 300px; object-fit: cover; border-radius: 24px; display: block; background: var(--card); }
+.photo.small { max-height: 170px; }
+.text-input { width: 100%; height: 52px; padding: 0 16px; border-radius: 16px; border: 1px solid var(--line); background: var(--card); color: var(--text); font: 500 15px Manrope, "Segoe UI", sans-serif; outline: none; }
+.text-input:focus { border-color: var(--accent); }
+.label { font-size: 13px; color: var(--muted); margin: 16px 2px 8px; display: block; }
+.loading { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 28px 0; }
+.spinner { width: 36px; height: 36px; border-radius: 50%; border: 3px solid var(--line); border-top-color: var(--accent); animation: spin 0.9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.chips { display: flex; gap: 8px; overflow-x: auto; margin: 14px 0 12px; }
+.chip { flex-shrink: 0; height: 40px; padding: 0 16px; border-radius: 20px; border: 1px solid var(--line); background: var(--card); color: var(--text); font-size: 14px; font-weight: 600; }
+.chip.on { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+.totals { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; background: var(--card); border-radius: 18px; padding: 14px 16px; margin-bottom: 10px; }
+.totals .v { font-size: 17px; font-weight: 700; }
+.totals .k { font-size: 12px; }
+.item { background: var(--card); border-radius: 16px; padding: 12px 8px 10px 16px; margin-bottom: 8px; }
+.item .top { display: flex; align-items: center; gap: 8px; }
+.item .top .name { flex: 1; font-size: 15px; font-weight: 600; min-width: 0; }
+.item .top .val { font-size: 13px; color: var(--muted); white-space: nowrap; }
+.item input[type=range] { width: calc(100% - 8px); accent-color: var(--accent); margin: 6px 0 0; }
