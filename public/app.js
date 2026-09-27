@@ -94,7 +94,17 @@
   }
 
   // Общее состояние приложения
-  const state = { profile: null, entries: [], quota: null, date: localDate() };
+  const state = { profile: null, entries: [], quota: null, premium: null, prices: null, date: localDate() };
+
+  async function loadState() {
+    const data = await api("/state?date=" + state.date);
+    state.profile = data.profile;
+    state.entries = data.entries || [];
+    state.quota = data.quota || null;
+    state.premium = data.premium || null;
+    state.prices = data.prices || null;
+    return data;
+  }
 
   // ---------- Анкета ----------
   const GOALS = {
@@ -379,6 +389,7 @@
           <div class="hello muted">${firstName ? "Привет, " + esc(firstName) + "!" : "Привет!"}</div>
           <h1 class="display">Сегодня</h1>
         </div>
+        <button class="badge ${state.premium?.active ? "on" : ""}" id="premium" type="button">Премиум</button>
       </header>
 
       <section class="card ring-wrap" aria-label="Калории за день">
@@ -406,8 +417,15 @@
       <div class="grow"></div>
       ${quotaHtml}
       <button class="primary" id="add-photo" type="button">Добавить еду по фото</button>
-      <button class="link-btn" id="edit" type="button">Изменить мои данные</button>
+      <div class="links">
+        <button class="link-btn" id="edit" type="button">Мои данные</button>
+        <button class="link-btn" id="sub" type="button">Подписка</button>
+      </div>
       <input id="file" type="file" accept="image/*" hidden>`;
+
+    const openSub = () => { haptic(); state.premium?.active ? renderSubscription() : renderPaywall(); };
+    document.getElementById("premium").addEventListener("click", openSub);
+    document.getElementById("sub").addEventListener("click", openSub);
 
     app.querySelectorAll("[data-del]").forEach((btn) => {
       btn.addEventListener("click", async () => {
@@ -427,7 +445,7 @@
     const fileInput = document.getElementById("file");
     document.getElementById("add-photo").addEventListener("click", () => {
       haptic();
-      if (q && !q.unlimited && q.left <= 0) return renderLimit();
+      if (q && !q.unlimited && q.left <= 0) return renderPaywall("limit");
       fileInput.click();
     });
     fileInput.addEventListener("change", async () => {
@@ -514,7 +532,7 @@
       haptic("error");
       if (e.code === "limit") {
         if (e.data?.quota) state.quota = e.data.quota;
-        return renderLimit();
+        return renderPaywall("limit");
       }
       setBack(() => renderHome());
       app.innerHTML = `
@@ -546,16 +564,179 @@
     document.getElementById("home").addEventListener("click", () => renderHome());
   }
 
-  function renderLimit() {
+  // ---------- Премиум: пейволл ----------
+  const STAR = `<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3L14.6 9L21 9.5L16 13.6L17.6 20L12 16.5L6.4 20L8 13.6L3 9.5L9.4 9Z" fill="#F4C84A"/></svg>`;
+  const CHECK = `<svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5L10 17L19 7" fill="none" stroke="#D4F25A" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  const LOGO = `<svg width="44" height="44" viewBox="0 0 96 96" aria-label="Hayanmi"><circle cx="48" cy="48" r="40" fill="none" stroke="#2C2E33" stroke-width="8"/><circle cx="48" cy="48" r="40" fill="none" stroke="#D4F25A" stroke-width="8" stroke-linecap="round" stroke-dasharray="180 252" transform="rotate(-90 48 48)"/><path d="M37 29V67M37 51C37 45 41 42 46 42C52 42 59 45 59 53V67" fill="none" stroke="#F3F1EA" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+
+  const dateText = (iso) => new Date(iso).toLocaleDateString("ru-RU", { day: "numeric", month: "long", year: "numeric" });
+
+  function renderPaywall(reason) {
     setBack(() => renderHome());
+    const prices = state.prices || { month: 250, year: 1500, trialDays: 3 };
+    const perMonth = Math.round(prices.year / 12);
+    const save = Math.round((1 - prices.year / (prices.month * 12)) * 100);
+    const trial = state.premium?.trialAvailable;
+    let plan = "year";
+
+    function draw() {
+      app.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center">${LOGO}</div>
+        <div style="margin:18px 0 20px">
+          <h2 class="q-title display" style="font-size:30px;margin-bottom:10px">Hayanmi<br><span style="color:var(--accent)">Премиум</span></h2>
+          <p class="q-sub" style="margin:0">${reason === "limit"
+            ? "Бесплатные распознавания закончились. С Премиумом — без ограничений."
+            : "Считай всё одним фото — без ограничений."}</p>
+        </div>
+        <div class="benefits">
+          <div>${CHECK}<span>Безлимитное распознавание еды по фото</span></div>
+          <div>${CHECK}<span>Новые премиум-функции: ИИ-коуч, голодание, замеры</span></div>
+          <div>${CHECK}<span>Оплата звёздами прямо в Telegram</span></div>
+        </div>
+        <div class="plans" role="radiogroup" aria-label="Тариф">
+          <button class="plan ${plan === "year" ? "on" : ""}" type="button" role="radio" aria-checked="${plan === "year"}" data-plan="year">
+            <div><div class="pt">Год</div><div class="pd">≈${perMonth} Stars в месяц · разовая оплата</div></div>
+            <div class="pp">${STAR}${fmt(prices.year)}</div>
+            ${save > 0 ? `<div class="save">−${save}%</div>` : ""}
+          </button>
+          <button class="plan ${plan === "month" ? "on" : ""}" type="button" role="radio" aria-checked="${plan === "month"}" data-plan="month">
+            <div><div class="pt">Месяц</div><div class="pd">Продление каждые 30 дней, можно отменить</div></div>
+            <div class="pp">${STAR}${fmt(prices.month)}</div>
+          </button>
+        </div>
+        <div class="grow"></div>
+        <div class="stack">
+          <button class="primary" id="buy" type="button">Оформить за ${fmt(plan === "year" ? prices.year : prices.month)} Stars</button>
+          ${trial ? `<button class="link-btn" id="trial" type="button" style="color:var(--text)">Попробовать ${prices.trialDays} дня бесплатно</button>` : ""}
+          <div class="small muted" style="text-align:center">Условия — команда /terms в чате с ботом · помощь — /paysupport</div>
+        </div>`;
+
+      app.querySelectorAll("[data-plan]").forEach((b) =>
+        b.addEventListener("click", () => { haptic("select"); plan = b.dataset.plan; draw(); })
+      );
+      document.getElementById("buy").addEventListener("click", (e) => buy(plan, e.currentTarget));
+      if (trial) document.getElementById("trial").addEventListener("click", startTrial);
+    }
+
+    draw();
+  }
+
+  async function buy(plan, btn) {
+    if (!tg?.openInvoice) return showAlert("Обновите Telegram, чтобы оплатить подписку.");
+    const label = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Открываю оплату…";
+    let link;
+    try {
+      ({ link } = await api("/invoice", { method: "POST", body: { plan } }));
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = label;
+      return showAlert("Не получилось открыть оплату. Попробуйте ещё раз.");
+    }
+    tg.openInvoice(link, (status) => {
+      if (status === "paid") return waitForPremium();
+      btn.disabled = false;
+      btn.textContent = label;
+      if (status === "failed") showAlert("Оплата не прошла. Попробуйте ещё раз.");
+    });
+  }
+
+  // После оплаты Telegram уведомляет сервер через бота — ждём, пока Премиум включится
+  async function waitForPremium() {
+    setBack(null);
+    app.innerHTML = `<div class="loading" style="margin-top:30vh"><div class="spinner" aria-hidden="true"></div><div>Активирую Премиум…</div></div>`;
+    for (let i = 0; i < 12; i++) {
+      await new Promise((r) => setTimeout(r, 1500));
+      try {
+        await loadState();
+        if (state.premium?.active) {
+          haptic("success");
+          return renderPremiumDone();
+        }
+      } catch (e) {}
+    }
+    renderMessage("Оплата получена", "Премиум включится в течение минуты. Если этого не произошло — напишите /paysupport в чате с ботом.", true);
+  }
+
+  function renderPremiumDone() {
+    setBack(null);
     app.innerHTML = `
-      <div style="margin-top:12px">
-        <h2 class="q-title display">Бесплатные распознавания закончились</h2>
-        <p class="q-sub">Скоро здесь появится Hayanmi Премиум — безлимитное распознавание фото за Telegram Stars.</p>
-      </div>
+      <div style="margin-top:24px">${LOGO}</div>
+      <h2 class="q-title display" style="margin-top:18px">Премиум активирован</h2>
+      <p class="q-sub">Доступ до ${dateText(state.premium.expiresAt)}. Распознавайте еду без ограничений.</p>
       <div class="grow"></div>
-      <button class="primary" id="home" type="button">На главную</button>`;
+      <button class="primary" id="home" type="button">Отлично</button>`;
     document.getElementById("home").addEventListener("click", () => renderHome());
+  }
+
+  async function startTrial(e) {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    try {
+      await api("/trial", { method: "POST" });
+      await loadState();
+      haptic("success");
+      renderPremiumDone();
+    } catch (err) {
+      btn.disabled = false;
+      showAlert(err.code === "trial_used" ? "Пробный период уже использован." : "Не получилось. Попробуйте ещё раз.");
+    }
+  }
+
+  // ---------- Премиум: управление подпиской ----------
+  function renderSubscription() {
+    setBack(() => renderHome());
+    const p = state.premium;
+    const prices = state.prices || { month: 250, year: 1500 };
+    const planName = p.plan === "trial" ? "Пробный период" : p.plan === "year" ? "Год" : "Месяц";
+
+    let details = `<p class="note" style="margin:0">Действует до <strong>${dateText(p.expiresAt)}</strong></p>`;
+    let action = "";
+    if (p.plan === "month" && p.recurring && !p.canceled) {
+      details += `<p class="note muted" style="margin:6px 0 0">Следующее списание — ${dateText(p.expiresAt)}, ${fmt(prices.month)} Stars</p>`;
+      action = `<button class="secondary" id="cancel" type="button">Отменить автопродление</button>`;
+    } else if (p.plan === "month" && p.canceled) {
+      details += `<p class="note muted" style="margin:6px 0 0">Автопродление отключено. После этой даты Премиум выключится.</p>`;
+    } else if (p.plan === "trial") {
+      details += `<p class="note muted" style="margin:6px 0 0">После пробного периода звёзды не списываются автоматически.</p>`;
+      action = `<button class="primary" id="upgrade" type="button">Оформить подписку</button>`;
+    }
+
+    app.innerHTML = `
+      <div style="margin-top:8px">${LOGO}</div>
+      <h2 class="q-title display" style="margin-top:18px">Hayanmi Премиум</h2>
+      <section class="card" style="margin-top:12px">
+        <div class="small muted" style="margin-bottom:6px">${planName}</div>
+        ${details}
+      </section>
+      <div class="grow"></div>
+      <div class="stack">
+        ${action}
+        <div class="small muted" style="text-align:center">Вопросы по оплате — /paysupport в чате с ботом</div>
+      </div>`;
+
+    const cancelBtn = document.getElementById("cancel");
+    if (cancelBtn) cancelBtn.addEventListener("click", async () => {
+      const ok = await showConfirm("Отменить автопродление? Премиум сохранится до конца оплаченного периода.");
+      if (!ok) return;
+      cancelBtn.disabled = true;
+      try {
+        await api("/cancel", { method: "POST" });
+        await loadState();
+        haptic("success");
+        renderSubscription();
+      } catch (e) {
+        cancelBtn.disabled = false;
+        showAlert("Не получилось отменить. Напишите /paysupport в чате с ботом.");
+      }
+    });
+    const up = document.getElementById("upgrade");
+    if (up) up.addEventListener("click", () => {
+      // во время пробного периода пейволл без кнопки «попробовать»
+      state.premium = { ...state.premium, trialAvailable: false };
+      renderPaywall();
+    });
   }
 
   // ---------- Фото: результат с ползунками ----------
@@ -677,10 +858,7 @@
 
     state.date = localDate();
     try {
-      const data = await api("/state?date=" + state.date);
-      state.profile = data.profile;
-      state.entries = data.entries || [];
-      state.quota = data.quota || null;
+      await loadState();
     } catch (e) {
       if (e.code === "no_db") {
         return renderMessage("Сервер настраивается", "База данных ещё не подключена. Загляните чуть позже.", true);

@@ -17,6 +17,13 @@ const WEBAPP_URL = RAW_WEBAPP_URL
 // Сколько фото можно распознать бесплатно (за всё время)
 const FREE_PHOTO_LIMIT = Number(process.env.FREE_PHOTO_LIMIT ?? 3);
 // Telegram ID админов через запятую — у них безлимит (для тестов)
+// Цены в Telegram Stars и пробный период
+const PLANS = {
+  month: { price: Number(process.env.PRICE_MONTH ?? 250), days: 30, recurring: true, title: "Hayanmi Премиум — месяц" },
+  year: { price: Number(process.env.PRICE_YEAR ?? 1500), days: 365, recurring: false, title: "Hayanmi Премиум — год" },
+};
+const TRIAL_DAYS = 3;
+const SUPPORT_CONTACT = process.env.SUPPORT_CONTACT || "";
 const ADMIN_IDS = new Set(
   (process.env.ADMIN_IDS || "").split(",").map((s) => s.trim()).filter(Boolean)
 );
@@ -94,21 +101,23 @@ const MEALS = new Set(["breakfast", "lunch", "dinner", "snack"]);
 const num = (v, min, max) => Math.min(max, Math.max(min, Number(v) || 0));
 const isAdmin = (userId) => ADMIN_IDS.has(String(userId));
 
-async function photoQuota(userId) {
+async function photoQuota(userId, premium) {
   const used = await db.countUsage(userId, "photo");
-  const unlimited = isAdmin(userId);
+  const prem = premium ?? (await db.getPremium(userId));
+  const unlimited = isAdmin(userId) || prem.active;
   return { used, limit: FREE_PHOTO_LIMIT, unlimited, left: unlimited ? null : Math.max(0, FREE_PHOTO_LIMIT - used) };
 }
 
 api.get("/state", async (req, res) => {
   try {
     const date = isDate(req.query.date) ? req.query.date : new Date().toISOString().slice(0, 10);
+    const premium = await db.getPremium(req.user.id);
     const [profile, entries, quota] = await Promise.all([
       db.getProfile(req.user.id),
       db.getEntries(req.user.id, date),
-      photoQuota(req.user.id),
+      photoQuota(req.user.id, premium),
     ]);
-    res.json({ ok: true, profile, entries, quota });
+    res.json({ ok: true, profile, entries, quota, premium: publicPremium(premium), prices: publicPrices() });
   } catch (e) {
     console.error("state:", e);
     res.status(500).json({ ok: false, error: "server_error" });
@@ -188,6 +197,65 @@ api.delete("/entries/:id", async (req, res) => {
   }
 });
 
+// ---------- Подписка ----------
+function publicPremium(p) {
+  const { chargeId, ...rest } = p;
+  return rest;
+}
+function publicPrices() {
+  return { month: PLANS.month.price, year: PLANS.year.price, trialDays: TRIAL_DAYS };
+}
+
+api.post("/invoice", async (req, res) => {
+  const planId = req.body?.plan;
+  const plan = PLANS[planId];
+  if (!plan) return res.status(400).json({ ok: false, error: "bad_plan" });
+  try {
+    const params = {
+      title: plan.title,
+      description: "Безлимитное распознавание еды по фото и все премиум-функции Hayanmi.",
+      payload: `${planId}:${req.user.id}`,
+      provider_token: "",
+      currency: "XTR",
+      prices: [{ label: plan.title, amount: plan.price }],
+    };
+    if (plan.recurring) params.subscription_period = 2592000; // 30 дней — единственный период, который разрешает Telegram
+    const link = await bot.api.raw.createInvoiceLink(params);
+    res.json({ ok: true, link });
+  } catch (e) {
+    console.error("invoice:", e);
+    res.status(500).json({ ok: false, error: "invoice_error" });
+  }
+});
+
+api.post("/trial", async (req, res) => {
+  try {
+    const ok = await db.startTrial(req.user.id, TRIAL_DAYS);
+    if (!ok) return res.status(409).json({ ok: false, error: "trial_used" });
+    res.json({ ok: true, premium: publicPremium(await db.getPremium(req.user.id)) });
+  } catch (e) {
+    console.error("trial:", e);
+    res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
+api.post("/cancel", async (req, res) => {
+  try {
+    const p = await db.getPremium(req.user.id);
+    if (!p.recurring || !p.chargeId || p.canceled) return res.status(400).json({ ok: false, error: "nothing_to_cancel" });
+    await bot.api.raw.editUserStarSubscription({
+      user_id: req.user.id,
+      telegram_payment_charge_id: p.chargeId,
+      is_canceled: true,
+    });
+    await db.markCanceled(req.user.id);
+    res.json({ ok: true, premium: publicPremium(await db.getPremium(req.user.id)) });
+  } catch (e) {
+    console.error("cancel:", e);
+    res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
 app.use("/api", api);
 
 // ---------- Бот ----------
@@ -215,6 +283,95 @@ bot.on("message:photo", (ctx) =>
   })
 );
 
+// Проверка перед оплатой: Telegram ждёт ответ до 10 секунд
+bot.on("pre_checkout_query", async (ctx) => {
+  const q = ctx.preCheckoutQuery;
+  const [planId, userId] = String(q.invoice_payload).split(":");
+  const plan = PLANS[planId];
+  const valid = plan && q.currency === "XTR" && q.total_amount === plan.price && String(q.from.id) === userId;
+  if (valid) return ctx.answerPreCheckoutQuery(true);
+  console.warn("Отклонён платёж:", q.invoice_payload, q.total_amount);
+  return ctx.answerPreCheckoutQuery(false, { error_message: "Цена изменилась. Откройте оплату заново в приложении." });
+});
+
+bot.on("message:successful_payment", async (ctx) => {
+  const p = ctx.message.successful_payment;
+  const [planId] = String(p.invoice_payload).split(":");
+  const plan = PLANS[planId];
+  if (!plan || !db.hasDb()) {
+    console.error("Оплата без тарифа или без базы:", p);
+    return;
+  }
+  try {
+    await db.upsertUser(ctx.from);
+    const added = await db.recordPayment({
+      userId: ctx.from.id,
+      plan: planId,
+      amount: p.total_amount,
+      chargeId: p.telegram_payment_charge_id,
+      recurring: !!(p.is_recurring || plan.recurring),
+      expiresAt: p.subscription_expiration_date ? new Date(p.subscription_expiration_date * 1000).toISOString() : null,
+      days: plan.days,
+    });
+    if (!added) return;
+    const prem = await db.getPremium(ctx.from.id);
+    const until = new Date(prem.expiresAt).toLocaleDateString("ru-RU", { day: "numeric", month: "long", year: "numeric" });
+    const renew = p.is_recurring && !p.is_first_recurring;
+    await ctx.reply(
+      (renew ? "Подписка продлена ✅\n" : "Спасибо! Hayanmi Премиум активирован ✅\n") +
+        `Доступ до ${until}.`,
+      { reply_markup: WEBAPP_URL ? openAppKeyboard() : undefined }
+    );
+  } catch (e) {
+    console.error("Ошибка записи оплаты:", e, p);
+    await ctx.reply("Оплата получена, но что-то пошло не так при активации. Напишите /paysupport — мы всё исправим.");
+  }
+});
+
+bot.command("paysupport", (ctx) =>
+  ctx.reply(
+    "Вопросы по оплате Hayanmi Премиум:\n\n" +
+      "• Отменить автопродление можно в приложении: Профиль → Подписка.\n" +
+      "• Если оплата прошла, а Премиум не включился, или нужен возврат — напишите нам" +
+      (SUPPORT_CONTACT ? `: ${SUPPORT_CONTACT}` : " в ответ на это сообщение.") +
+      `\n\nВаш ID для обращения: ${ctx.from.id}`
+  )
+);
+
+bot.command("terms", (ctx) =>
+  ctx.reply(
+    "Условия Hayanmi Премиум\n\n" +
+      `1. Месяц — ${PLANS.month.price} Stars, продлевается автоматически каждые 30 дней, пока вы не отмените автопродление.\n` +
+      `2. Год — ${PLANS.year.price} Stars, разовая оплата на 365 дней, без автопродления.\n` +
+      `3. Пробный период — ${TRIAL_DAYS} дня, один раз, без списания.\n` +
+      "4. Hayanmi не является медицинским изделием и не заменяет консультацию врача. Расчёты калорий — ориентир.\n" +
+      "5. Вопросы и возвраты — через /paysupport."
+  )
+);
+
+// Возврат последней оплаты пользователю (только для админов): /refund 123456789
+bot.command("refund", async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return;
+  const userId = ctx.match.trim();
+  if (!/^\d+$/.test(userId)) return ctx.reply("Формат: /refund <Telegram ID пользователя>");
+  try {
+    const pay = await db.lastPayment(userId);
+    if (!pay) return ctx.reply("У пользователя нет оплат для возврата.");
+    await bot.api.raw.refundStarPayment({ user_id: Number(userId), telegram_payment_charge_id: pay.charge_id });
+    const prem = await db.getPremium(userId);
+    if (prem.recurring && prem.chargeId && !prem.canceled) {
+      await bot.api.raw
+        .editUserStarSubscription({ user_id: Number(userId), telegram_payment_charge_id: prem.chargeId, is_canceled: true })
+        .catch((e) => console.warn("Не удалось отменить автопродление:", e.description || e));
+    }
+    await db.markRefunded(pay.id, userId);
+    await ctx.reply(`Возвращено ${pay.amount} Stars пользователю ${userId}. Премиум отключён.`);
+  } catch (e) {
+    console.error("refund:", e);
+    await ctx.reply("Не получилось: " + (e.description || e.message));
+  }
+});
+
 bot.catch((err) => console.error("Ошибка бота:", err.error));
 
 // ---------- Запуск ----------
@@ -229,7 +386,11 @@ async function main() {
 
   app.listen(PORT, () => console.log(`Сервер запущен на порту ${PORT}`));
 
-  await bot.api.setMyCommands([{ command: "start", description: "Открыть Hayanmi" }]);
+  await bot.api.setMyCommands([
+    { command: "start", description: "Открыть Hayanmi" },
+    { command: "paysupport", description: "Помощь с оплатой" },
+    { command: "terms", description: "Условия подписки" },
+  ]);
   if (WEBAPP_URL) {
     await bot.api.setChatMenuButton({
       menu_button: { type: "web_app", text: "Hayanmi", web_app: { url: WEBAPP_URL } },

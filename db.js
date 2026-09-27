@@ -48,6 +48,29 @@ export async function migrate() {
       created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
     );
     CREATE INDEX IF NOT EXISTS ai_usage_user_kind ON ai_usage (user_id, kind);
+
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS trial_used_at TIMESTAMPTZ;
+
+    CREATE TABLE IF NOT EXISTS subscriptions (
+      user_id     BIGINT PRIMARY KEY REFERENCES users(telegram_id) ON DELETE CASCADE,
+      plan        TEXT NOT NULL,
+      expires_at  TIMESTAMPTZ NOT NULL,
+      recurring   BOOLEAN NOT NULL DEFAULT false,
+      canceled    BOOLEAN NOT NULL DEFAULT false,
+      charge_id   TEXT,
+      updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    CREATE TABLE IF NOT EXISTS payments (
+      id          BIGSERIAL PRIMARY KEY,
+      user_id     BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+      plan        TEXT NOT NULL,
+      amount      INT NOT NULL,
+      charge_id   TEXT NOT NULL UNIQUE,
+      recurring   BOOLEAN NOT NULL DEFAULT false,
+      refunded    BOOLEAN NOT NULL DEFAULT false,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
   `);
   console.log("База данных готова");
 }
@@ -124,4 +147,117 @@ export async function countUsage(userId, kind) {
 
 export async function addUsage(userId, kind) {
   await pool.query(`INSERT INTO ai_usage (user_id, kind) VALUES ($1, $2)`, [userId, kind]);
+}
+
+// ---------- Подписка ----------
+export async function getPremium(userId) {
+  const { rows } = await pool.query(
+    `SELECT u.trial_used_at, s.plan, s.expires_at, s.recurring, s.canceled, s.charge_id,
+            (s.expires_at > now()) AS active
+     FROM users u LEFT JOIN subscriptions s ON s.user_id = u.telegram_id
+     WHERE u.telegram_id = $1`,
+    [userId]
+  );
+  const r = rows[0];
+  if (!r) return { active: false, trialAvailable: true };
+  return {
+    active: !!r.active,
+    plan: r.plan ?? null,
+    expiresAt: r.expires_at ? new Date(r.expires_at).toISOString() : null,
+    recurring: !!r.recurring,
+    canceled: !!r.canceled,
+    chargeId: r.charge_id ?? null,
+    trialAvailable: !r.trial_used_at && !r.plan,
+  };
+}
+
+// Пробный период: один раз на пользователя и только если подписки ещё не было
+export async function startTrial(userId, days) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query(
+      `SELECT u.trial_used_at, s.user_id AS has_sub
+       FROM users u LEFT JOIN subscriptions s ON s.user_id = u.telegram_id
+       WHERE u.telegram_id = $1 FOR UPDATE OF u`,
+      [userId]
+    );
+    if (!rows[0] || rows[0].trial_used_at || rows[0].has_sub) {
+      await client.query("ROLLBACK");
+      return false;
+    }
+    await client.query(`UPDATE users SET trial_used_at = now() WHERE telegram_id = $1`, [userId]);
+    await client.query(
+      `INSERT INTO subscriptions (user_id, plan, expires_at) VALUES ($1, 'trial', now() + make_interval(days => $2))`,
+      [userId, days]
+    );
+    await client.query("COMMIT");
+    return true;
+  } catch (e) {
+    await client.query("ROLLBACK");
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+// Записываем оплату и продлеваем доступ. Повторное уведомление о той же оплате ничего не меняет.
+export async function recordPayment({ userId, plan, amount, chargeId, recurring, expiresAt, days }) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const ins = await client.query(
+      `INSERT INTO payments (user_id, plan, amount, charge_id, recurring)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (charge_id) DO NOTHING RETURNING id`,
+      [userId, plan, amount, chargeId, recurring]
+    );
+    if (ins.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return false;
+    }
+    await client.query(
+      `INSERT INTO subscriptions (user_id, plan, expires_at, recurring, canceled, charge_id)
+       VALUES ($1, $2, COALESCE($3::timestamptz, now() + make_interval(days => $4)), $5, false, $6)
+       ON CONFLICT (user_id) DO UPDATE SET
+         plan = EXCLUDED.plan,
+         expires_at = CASE
+           WHEN $3::timestamptz IS NOT NULL THEN $3::timestamptz
+           ELSE GREATEST(subscriptions.expires_at, now()) + make_interval(days => $4)
+         END,
+         recurring = EXCLUDED.recurring,
+         canceled = false,
+         charge_id = EXCLUDED.charge_id,
+         updated_at = now()`,
+      [userId, plan, expiresAt ?? null, days, recurring, chargeId]
+    );
+    await client.query("COMMIT");
+    return true;
+  } catch (e) {
+    await client.query("ROLLBACK");
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+export async function lastPayment(userId) {
+  const { rows } = await pool.query(
+    `SELECT id, plan, amount, charge_id FROM payments
+     WHERE user_id = $1 AND refunded = false ORDER BY created_at DESC LIMIT 1`,
+    [userId]
+  );
+  return rows[0] ?? null;
+}
+
+export async function markRefunded(paymentId, userId) {
+  await pool.query(`UPDATE payments SET refunded = true WHERE id = $1`, [paymentId]);
+  await pool.query(
+    `UPDATE subscriptions SET expires_at = LEAST(expires_at, now()), canceled = true, updated_at = now() WHERE user_id = $1`,
+    [userId]
+  );
+}
+
+export async function markCanceled(userId) {
+  await pool.query(`UPDATE subscriptions SET canceled = true, updated_at = now() WHERE user_id = $1`, [userId]);
 }

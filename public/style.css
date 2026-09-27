@@ -117,3 +117,19 @@ button { font-family: inherit; cursor: pointer; }
 .item .top .name { flex: 1; font-size: 15px; font-weight: 600; min-width: 0; }
 .item .top .val { font-size: 13px; color: var(--muted); white-space: nowrap; }
 .item input[type=range] { width: calc(100% - 8px); accent-color: var(--accent); margin: 6px 0 0; }
+
+/* ---- Премиум ---- */
+.badge { height: 36px; padding: 0 14px; border-radius: 18px; border: 1px solid var(--line); background: var(--card); color: var(--muted); font-size: 13px; font-weight: 700; }
+.badge.on { border-color: var(--accent); color: var(--accent); }
+.links { display: flex; }
+.links .link-btn { flex: 1; }
+.benefits { display: flex; flex-direction: column; gap: 12px; margin-bottom: 20px; }
+.benefits > div { display: flex; align-items: center; gap: 12px; font-size: 15px; }
+.benefits svg { flex-shrink: 0; }
+.plans { display: flex; flex-direction: column; gap: 12px; }
+.plan { position: relative; width: 100%; padding: 16px 18px; border-radius: 18px; border: 1px solid var(--line); background: var(--card); color: var(--text); text-align: left; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.plan.on { border: 2px solid var(--accent); padding: 15px 17px; }
+.plan .pt { font-size: 17px; font-weight: 700; }
+.plan .pd { font-size: 13px; color: var(--muted); margin-top: 4px; }
+.plan .pp { display: flex; align-items: center; gap: 6px; font-size: 18px; font-weight: 700; white-space: nowrap; }
+.plan .save { position: absolute; right: 16px; top: -11px; padding: 3px 10px; border-radius: 999px; background: var(--accent); color: var(--bg); font-size: 12px; font-weight: 700; }
