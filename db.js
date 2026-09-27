@@ -498,3 +498,94 @@ export async function addCoachMessages(userId, pairs) {
 export async function clearCoachMessages(userId) {
   await pool.query(`DELETE FROM coach_messages WHERE user_id = $1`, [userId]);
 }
+
+// ---------- Админ-панель ----------
+export async function adminStats() {
+  const q = async (sql, params = []) => (await pool.query(sql, params)).rows[0];
+  const [users, active, subs, money, ai] = await Promise.all([
+    q(`SELECT count(*)::int AS total,
+              count(*) FILTER (WHERE created_at > now() - interval '1 day')::int AS day,
+              count(*) FILTER (WHERE created_at > now() - interval '7 days')::int AS week,
+              count(*) FILTER (WHERE profile IS NOT NULL)::int AS onboarded,
+              count(*) FILTER (WHERE COALESCE((reminders->>'blocked')::boolean, false))::int AS blocked
+       FROM users`),
+    q(`SELECT count(DISTINCT user_id) FILTER (WHERE created_at > now() - interval '1 day')::int AS day,
+              count(DISTINCT user_id) FILTER (WHERE created_at > now() - interval '7 days')::int AS week
+       FROM food_entries WHERE created_at > now() - interval '7 days'`),
+    q(`SELECT count(*) FILTER (WHERE expires_at > now() AND plan IN ('month', 'year'))::int AS paid,
+              count(*) FILTER (WHERE expires_at > now() AND plan = 'month' AND recurring AND NOT canceled)::int AS renewing,
+              count(*) FILTER (WHERE expires_at > now() AND plan = 'trial')::int AS trials,
+              count(*) FILTER (WHERE expires_at > now() AND plan = 'gift')::int AS gifts
+       FROM subscriptions`),
+    q(`SELECT COALESCE(sum(amount) FILTER (WHERE NOT refunded), 0)::int AS total,
+              COALESCE(sum(amount) FILTER (WHERE NOT refunded AND created_at > now() - interval '30 days'), 0)::int AS month,
+              count(*) FILTER (WHERE created_at > now() - interval '30 days')::int AS month_count,
+              count(*) FILTER (WHERE refunded)::int AS refunds
+       FROM payments`),
+    pool.query(`SELECT kind, count(*)::int AS n FROM ai_usage WHERE created_at > now() - interval '1 day' GROUP BY kind`),
+  ]);
+  const aiDay = Object.fromEntries(ai.rows.map((r) => [r.kind, r.n]));
+  return { users, active, subs, money, aiDay };
+}
+
+export async function adminNewUsers(days = 14) {
+  const { rows } = await pool.query(
+    `SELECT to_char(d::date, 'YYYY-MM-DD') AS date, count(u.telegram_id)::int AS n
+     FROM generate_series(current_date - ($1::int - 1), current_date, interval '1 day') AS d
+     LEFT JOIN users u ON u.created_at::date = d::date
+     GROUP BY d ORDER BY d`,
+    [days]
+  );
+  return rows;
+}
+
+export async function adminPayments(limit = 15) {
+  const { rows } = await pool.query(
+    `SELECT p.user_id::text AS user_id, p.plan, p.amount, p.refunded, p.created_at, u.first_name, u.username
+     FROM payments p LEFT JOIN users u ON u.telegram_id = p.user_id
+     ORDER BY p.created_at DESC LIMIT $1`,
+    [limit]
+  );
+  return rows.map((r) => ({ ...r, created_at: new Date(r.created_at).toISOString() }));
+}
+
+// Поиск по Telegram ID или @username
+export async function adminFindUser(query) {
+  const q = String(query).trim().replace(/^@/, "");
+  const byId = /^\d+$/.test(q);
+  const { rows } = await pool.query(
+    `SELECT u.telegram_id::text AS id, u.first_name, u.username, u.profile, u.timezone, u.created_at, u.trial_used_at,
+            COALESCE((u.reminders->>'blocked')::boolean, false) AS blocked,
+            s.plan, s.expires_at, s.recurring, s.canceled,
+            (SELECT count(*)::int FROM food_entries f WHERE f.user_id = u.telegram_id) AS entries,
+            (SELECT count(DISTINCT entry_date)::int FROM food_entries f WHERE f.user_id = u.telegram_id) AS days,
+            (SELECT max(created_at) FROM food_entries f WHERE f.user_id = u.telegram_id) AS last_entry,
+            (SELECT count(*)::int FROM ai_usage a WHERE a.user_id = u.telegram_id AND a.kind = 'photo') AS photos,
+            (SELECT count(*)::int FROM ai_usage a WHERE a.user_id = u.telegram_id AND a.kind = 'coach') AS coach,
+            (SELECT COALESCE(sum(amount), 0)::int FROM payments p WHERE p.user_id = u.telegram_id AND NOT p.refunded) AS paid
+     FROM users u LEFT JOIN subscriptions s ON s.user_id = u.telegram_id
+     WHERE ${byId ? "u.telegram_id = $1::bigint" : "lower(u.username) = lower($1)"}`,
+    [q]
+  );
+  const r = rows[0];
+  if (!r) return null;
+  const iso = (d) => (d ? new Date(d).toISOString() : null);
+  return {
+    ...r, created_at: iso(r.created_at), trial_used_at: iso(r.trial_used_at),
+    expires_at: iso(r.expires_at), last_entry: iso(r.last_entry),
+    premium: !!(r.expires_at && new Date(r.expires_at) > new Date()),
+  };
+}
+
+// Выдать Премиум вручную (подарок блогеру, другу, компенсация)
+export async function adminGrant(userId, days) {
+  await pool.query(
+    `INSERT INTO subscriptions (user_id, plan, expires_at) VALUES ($1, 'gift', now() + make_interval(days => $2))
+     ON CONFLICT (user_id) DO UPDATE SET
+       expires_at = GREATEST(subscriptions.expires_at, now()) + make_interval(days => $2),
+       plan = CASE WHEN subscriptions.recurring AND NOT subscriptions.canceled AND subscriptions.expires_at > now()
+                   THEN subscriptions.plan ELSE 'gift' END,
+       updated_at = now()`,
+    [userId, days]
+  );
+}

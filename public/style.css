@@ -337,3 +337,9 @@ button { font-family: inherit; cursor: pointer; }
 .homescreen .hs-icon { width: 44px; height: 44px; border-radius: 12px; background: var(--card2); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .homescreen .hs-text { flex: 1; min-width: 0; }
 .homescreen .hs-add { height: 38px; padding: 0 14px; border-radius: 19px; border: none; background: var(--accent); color: var(--bg); font-size: 14px; font-weight: 700; }
+
+/* ---- Админ-панель ---- */
+.admin-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
+.admin-grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.admin-grid .stat .v { font-size: 22px; margin: 4px 0; }
+.entry.pay { width: 100%; text-align: left; border: none; color: var(--text); font-family: inherit; padding-right: 16px; }

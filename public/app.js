@@ -828,6 +828,7 @@
 
     app.innerHTML = `
       <h2 class="q-title display" style="margin-top:4px">Профиль</h2>
+      ${state.access?.admin ? `<button class="secondary accent" id="admin-btn" type="button" style="margin-bottom:12px">Админ-панель</button>` : ""}
 
       <section class="card">
         <div class="kv"><span class="muted">Норма</span><strong>${fmt(r.kcal)} ккал</strong></div>
@@ -862,6 +863,8 @@
         : ""}
       ${tabbarHtml("")}`;
     bindTabs();
+    const adminBtn = document.getElementById("admin-btn");
+    if (adminBtn) adminBtn.addEventListener("click", () => { haptic(); renderAdmin(); });
     const hsP = document.getElementById("hs-profile");
     if (hsP && state.homeScreen !== "added") hsP.addEventListener("click", addToHome);
     document.getElementById("sub-btn").addEventListener("click", () => {
@@ -910,6 +913,180 @@
         btn.disabled = false;
         btn.textContent = "Сохранить";
         showAlert("Не получилось сохранить. Попробуйте ещё раз.");
+      }
+    });
+  }
+
+  // ---------- Админ-панель ----------
+  const PLAN_RU = { month: "Месяц", year: "Год", trial: "Пробный", gift: "Подарок" };
+  const dt = (iso, withTime) => iso
+    ? new Date(iso).toLocaleString("ru-RU", withTime
+        ? { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }
+        : { day: "numeric", month: "short", year: "numeric" })
+    : "—";
+
+  function newUsersChart(rows) {
+    const W = 320, H = 120, padB = 20, gap = 4;
+    const max = Math.max(1, ...rows.map((r) => r.n));
+    const bw = (W - gap * (rows.length - 1)) / rows.length;
+    return `
+      <svg width="100%" viewBox="0 0 ${W} ${H}" aria-label="Новые пользователи за 14 дней">
+        ${rows.map((r, i) => {
+          const h = Math.max(r.n ? 4 : 2, (r.n / max) * (H - padB - 14));
+          const x = i * (bw + gap), y = H - padB - h;
+          const last = i === rows.length - 1;
+          return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" rx="3" fill="${r.n ? (last ? "#D4F25A" : "#86B6FF") : "#2C2E33"}"/>
+            ${r.n ? `<text x="${(x + bw / 2).toFixed(1)}" y="${(y - 3).toFixed(1)}" font-size="9" text-anchor="middle" fill="#A6A59E" font-family="Manrope, sans-serif">${r.n}</text>` : ""}
+            ${i % 2 === 0 || last ? `<text x="${(x + bw / 2).toFixed(1)}" y="${H - 5}" font-size="9" text-anchor="middle" fill="${last ? "#F3F1EA" : "#A6A59E"}" font-family="Manrope, sans-serif">${Number(r.date.slice(8))}</text>` : ""}`;
+        }).join("")}
+      </svg>`;
+  }
+
+  async function renderAdmin() {
+    setBack(() => renderProfile());
+    app.innerHTML = `
+      <h2 class="q-title display" style="margin-top:4px">Админ-панель</h2>
+      <div class="loading"><div class="spinner" aria-label="Загрузка"></div></div>`;
+    let d;
+    try {
+      d = await api("/admin/stats");
+    } catch (e) {
+      return renderMessage("Нет доступа", e.code === "forbidden" ? "Эта панель только для админов." : "Не получилось загрузить статистику.", false);
+    }
+    const st = d.stats;
+    const usd = (stars) => "≈ $" + Math.round(stars * d.starUsd).toLocaleString("ru-RU");
+
+    app.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin:4px 0 14px">
+        <h2 class="q-title display" style="margin:0">Админ-панель</h2>
+        <button class="badge" id="refresh" type="button">Обновить</button>
+      </div>
+
+      <div class="admin-grid">
+        <div class="stat"><div class="k">Пользователи</div><div class="v display">${fmt(st.users.total)}</div><div class="k" style="color:var(--accent)">+${st.users.day} сегодня</div></div>
+        <div class="stat"><div class="k">Активны сегодня</div><div class="v display">${fmt(st.active.day)}</div><div class="k">${st.active.week} за неделю</div></div>
+        <div class="stat"><div class="k">Платные подписки</div><div class="v display">${fmt(st.subs.paid)}</div><div class="k">${st.subs.renewing} с автопродлением</div></div>
+        <div class="stat"><div class="k">Выручка 30 дней</div><div class="v display">${fmt(st.money.month)} ⭐</div><div class="k">${usd(st.money.month)}</div></div>
+      </div>
+
+      <section class="card">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px">
+          <strong>Новые за 14 дней</strong><span class="small muted">+${st.users.week} за неделю</span>
+        </div>
+        ${newUsersChart(d.newUsers)}
+      </section>
+
+      <section class="card">
+        <div class="kv"><span class="muted">Прошли анкету</span><strong>${fmt(st.users.onboarded)} из ${fmt(st.users.total)}</strong></div>
+        <div class="kv"><span class="muted">Пробный период сейчас</span><strong>${st.subs.trials}</strong></div>
+        <div class="kv"><span class="muted">Подарочный Премиум</span><strong>${st.subs.gifts}</strong></div>
+        <div class="kv"><span class="muted">Выручка за всё время</span><strong>${fmt(st.money.total)} ⭐ · ${usd(st.money.total)}</strong></div>
+        <div class="kv"><span class="muted">Оплат за 30 дней / возвратов</span><strong>${st.money.month_count} / ${st.money.refunds}</strong></div>
+        <div class="kv"><span class="muted">Заблокировали бота</span><strong>${st.users.blocked}</strong></div>
+      </section>
+
+      <div class="section-title"><span>ИИ за сутки</span></div>
+      <div class="admin-grid three">
+        <div class="stat"><div class="v display">${st.aiDay.photo || 0}</div><div class="k">фото</div></div>
+        <div class="stat"><div class="v display">${st.aiDay.recipe || 0}</div><div class="k">рецептов</div></div>
+        <div class="stat"><div class="v display">${st.aiDay.coach || 0}</div><div class="k">сообщений коучу</div></div>
+      </div>
+
+      <div class="section-title" style="margin-top:14px"><span>Найти пользователя</span></div>
+      <div style="display:flex;gap:8px">
+        <input class="text-input" id="q" type="text" autocomplete="off" placeholder="Telegram ID или @username" aria-label="Telegram ID или username">
+        <button class="water-add" id="find" type="button" style="background:var(--accent);height:52px">Найти</button>
+      </div>
+      <div class="error" id="find-err" role="alert"></div>
+
+      <div class="section-title"><span>Последние оплаты</span></div>
+      ${d.payments.length ? d.payments.map((p) => `
+        <button class="entry pay" type="button" data-uid="${esc(p.user_id)}">
+          <div class="info">
+            <div class="name">${esc(p.first_name || "Без имени")}${p.username ? ` <span class="muted">@${esc(p.username)}</span>` : ""}</div>
+            <div class="meta">${PLAN_RU[p.plan] || p.plan} · ${dt(p.created_at, true)}${p.refunded ? " · возврат" : ""}</div>
+          </div>
+          <div class="kcal" style="${p.refunded ? "text-decoration:line-through;color:var(--muted)" : ""}">${fmt(p.amount)} ⭐</div>
+        </button>`).join("") : `<section class="card empty"><p class="note muted" style="margin:0">Оплат пока нет.</p></section>`}`;
+
+    document.getElementById("refresh").addEventListener("click", () => { haptic(); renderAdmin(); });
+    const find = async (query) => {
+      const q = String(query || "").trim();
+      const err = document.getElementById("find-err");
+      if (!q) return;
+      try {
+        const r = await api("/admin/user?q=" + encodeURIComponent(q));
+        renderAdminUser(r.user);
+      } catch (e) {
+        if (err) err.textContent = e.code === "not_found" ? "Пользователь не найден." : "Не получилось найти.";
+        haptic("error");
+      }
+    };
+    document.getElementById("find").addEventListener("click", () => find(document.getElementById("q").value));
+    document.getElementById("q").addEventListener("keydown", (e) => { if (e.key === "Enter") find(e.target.value); });
+    app.querySelectorAll("[data-uid]").forEach((b) => b.addEventListener("click", () => { haptic(); find(b.dataset.uid); }));
+  }
+
+  function renderAdminUser(u) {
+    setBack(() => renderAdmin());
+    const a = u.profile?.answers, r = u.profile?.result;
+    const goal = a ? ({ lose: "Снизить вес", keep: "Держать вес", gain: "Набрать массу" }[a.goal] || "—") : "—";
+    const status = u.premium
+      ? `${PLAN_RU[u.plan] || u.plan} до ${dt(u.expires_at)}${u.plan === "month" ? (u.recurring && !u.canceled ? " · автопродление" : " · без автопродления") : ""}`
+      : u.plan ? `Истёк ${dt(u.expires_at)}` : "Нет";
+
+    app.innerHTML = `
+      <h2 class="q-title display" style="margin:4px 0 4px;font-size:24px">${esc(u.first_name || "Без имени")}</h2>
+      <p class="q-sub" style="margin-bottom:14px">${u.username ? "@" + esc(u.username) + " · " : ""}ID ${esc(u.id)}${u.blocked ? " · заблокировал бота" : ""}</p>
+
+      <section class="card">
+        <div class="kv"><span class="muted">Премиум</span><strong style="text-align:right">${status}</strong></div>
+        <div class="kv"><span class="muted">Оплатил всего</span><strong>${fmt(u.paid)} ⭐</strong></div>
+        <div class="kv"><span class="muted">Пробный период</span><strong>${u.trial_used_at ? "использован" : "не использован"}</strong></div>
+      </section>
+
+      <section class="card">
+        <div class="kv"><span class="muted">С нами с</span><strong>${dt(u.created_at)}</strong></div>
+        <div class="kv"><span class="muted">Последняя запись</span><strong>${dt(u.last_entry, true)}</strong></div>
+        <div class="kv"><span class="muted">Записей / дней с записями</span><strong>${u.entries} / ${u.days}</strong></div>
+        <div class="kv"><span class="muted">Фото распознано</span><strong>${u.photos}</strong></div>
+        <div class="kv"><span class="muted">Сообщений коучу</span><strong>${u.coach}</strong></div>
+        <div class="kv"><span class="muted">Часовой пояс</span><strong>${esc(u.timezone || "—")}</strong></div>
+      </section>
+
+      ${a ? `<section class="card">
+        <div class="kv"><span class="muted">Цель</span><strong>${goal}${a.target ? " · " + a.target + " кг" : ""}</strong></div>
+        <div class="kv"><span class="muted">Вес · рост · возраст</span><strong>${a.weight} кг · ${a.height} см · ${a.age}</strong></div>
+        <div class="kv"><span class="muted">Норма</span><strong>${fmt(r.kcal)} ккал</strong></div>
+      </section>` : `<section class="card empty"><p class="note muted" style="margin:0">Анкету ещё не прошёл.</p></section>`}
+
+      <div class="section-title"><span>Выдать Премиум</span></div>
+      <div class="chips" style="margin-top:0">
+        ${[7, 30, 90, 365].map((dd) => `<button class="chip" type="button" data-days="${dd}">${dd} дн.</button>`).join("")}
+      </div>
+      ${u.paid > 0 ? `<button class="secondary" id="refund" type="button" style="margin-top:6px;border-color:var(--fat);color:var(--fat)">Вернуть последнюю оплату</button>` : ""}`;
+
+    app.querySelectorAll("[data-days]").forEach((b) => b.addEventListener("click", async () => {
+      const days = Number(b.dataset.days);
+      if (!(await showConfirm(`Выдать Премиум на ${days} дн.? Пользователь получит сообщение от бота.`))) return;
+      try {
+        const res = await api("/admin/grant", { method: "POST", body: { userId: u.id, days } });
+        haptic("success");
+        renderAdminUser(res.user);
+      } catch (e) {
+        showAlert("Не получилось выдать Премиум.");
+      }
+    }));
+    const rf = document.getElementById("refund");
+    if (rf) rf.addEventListener("click", async () => {
+      if (!(await showConfirm("Вернуть звёзды за последнюю оплату и отключить Премиум?"))) return;
+      try {
+        const res = await api("/admin/refund", { method: "POST", body: { userId: u.id } });
+        haptic("success");
+        showAlert(`Возвращено ${res.amount} ⭐`);
+        renderAdminUser(res.user);
+      } catch (e) {
+        showAlert(e.code === "no_payments" ? "Нет оплат для возврата." : "Не получилось вернуть: " + (e.data?.message || "ошибка"));
       }
     });
   }
@@ -1075,7 +1252,7 @@
     setBack(() => renderHome());
     const p = state.premium;
     const prices = state.prices || { month: 250, year: 1500 };
-    const planName = p.plan === "trial" ? "Пробный период" : p.plan === "year" ? "Год" : "Месяц";
+    const planName = { trial: "Пробный период", year: "Год", month: "Месяц", gift: "Подарок" }[p.plan] || "Премиум";
 
     let details = `<p class="note" style="margin:0">Действует до <strong>${dateText(p.expiresAt)}</strong></p>`;
     let action = "";

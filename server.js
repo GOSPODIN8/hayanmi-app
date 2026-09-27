@@ -195,7 +195,7 @@ api.get("/state", async (req, res) => {
       premium: publicPremium(premium), prices: publicPrices(),
       water: { ml: waterMl, goal: waterGoal(profile) },
       reminders,
-      access: { premium: premium.active || isAdmin(req.user.id) },
+      access: { premium: premium.active || isAdmin(req.user.id), admin: isAdmin(req.user.id) },
     });
   } catch (e) {
     console.error("state:", e);
@@ -415,6 +415,69 @@ api.post("/coach/clear", async (req, res) => {
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
+// ---------- Админ-панель (только ADMIN_IDS) ----------
+const STAR_USD = Number(process.env.STAR_USD ?? 0.013); // примерный курс вывода звёзд
+const adminOnly = (req, res, next) =>
+  isAdmin(req.user.id) ? next() : res.status(403).json({ ok: false, error: "forbidden" });
+
+api.get("/admin/stats", adminOnly, async (req, res) => {
+  try {
+    const [stats, newUsers, payments] = await Promise.all([db.adminStats(), db.adminNewUsers(14), db.adminPayments(15)]);
+    res.json({ ok: true, stats, newUsers, payments, starUsd: STAR_USD });
+  } catch (e) {
+    console.error("admin stats:", e);
+    res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
+api.get("/admin/user", adminOnly, async (req, res) => {
+  const q = String(req.query.q || "").trim();
+  if (!q || q.length > 64) return res.status(400).json({ ok: false, error: "bad_query" });
+  try {
+    const user = await db.adminFindUser(q);
+    if (!user) return res.status(404).json({ ok: false, error: "not_found" });
+    res.json({ ok: true, user });
+  } catch (e) {
+    console.error("admin user:", e);
+    res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
+api.post("/admin/grant", adminOnly, async (req, res) => {
+  const userId = String(req.body?.userId || "");
+  const days = Number(req.body?.days);
+  if (!/^\d+$/.test(userId) || !Number.isInteger(days) || days < 1 || days > 365) {
+    return res.status(400).json({ ok: false, error: "bad_request" });
+  }
+  try {
+    if (!(await db.adminFindUser(userId))) return res.status(404).json({ ok: false, error: "not_found" });
+    await db.adminGrant(userId, days);
+    if (req.body?.notify !== false) {
+      await bot.api.sendMessage(Number(userId),
+        `🎁 Тебе подарили Hayanmi Премиум на ${days} дн.! Распознавание фото, ИИ-коуч и все рецепты — без ограничений.`,
+        WEBAPP_URL ? { reply_markup: openAppKeyboard() } : undefined
+      ).catch(() => {});
+    }
+    res.json({ ok: true, user: await db.adminFindUser(userId) });
+  } catch (e) {
+    console.error("admin grant:", e);
+    res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
+api.post("/admin/refund", adminOnly, async (req, res) => {
+  const userId = String(req.body?.userId || "");
+  if (!/^\d+$/.test(userId)) return res.status(400).json({ ok: false, error: "bad_request" });
+  try {
+    const r = await refundLastPayment(userId);
+    if (!r.ok) return res.status(400).json({ ok: false, error: "no_payments" });
+    res.json({ ok: true, amount: r.amount, user: await db.adminFindUser(userId) });
+  } catch (e) {
+    console.error("admin refund:", e);
+    res.status(500).json({ ok: false, error: "refund_failed", message: e.description || e.message });
   }
 });
 
@@ -841,25 +904,53 @@ bot.command("terms", (ctx) =>
 );
 
 // Возврат последней оплаты пользователю (только для админов): /refund 123456789
+// Возврат последней оплаты пользователю + отключение Премиума и автопродления
+async function refundLastPayment(userId) {
+  const pay = await db.lastPayment(userId);
+  if (!pay) return { ok: false, error: "Нет оплат для возврата" };
+  await bot.api.raw.refundStarPayment({ user_id: Number(userId), telegram_payment_charge_id: pay.charge_id });
+  const prem = await db.getPremium(userId);
+  if (prem.recurring && prem.chargeId && !prem.canceled) {
+    await bot.api.raw
+      .editUserStarSubscription({ user_id: Number(userId), telegram_payment_charge_id: prem.chargeId, is_canceled: true })
+      .catch((e) => console.warn("Не удалось отменить автопродление:", e.description || e));
+  }
+  await db.markRefunded(pay.id, userId);
+  return { ok: true, amount: pay.amount };
+}
+
+// /refund 123456789 — только для админов
 bot.command("refund", async (ctx) => {
   if (!isAdmin(ctx.from.id)) return;
   const userId = ctx.match.trim();
   if (!/^\d+$/.test(userId)) return ctx.reply("Формат: /refund <Telegram ID пользователя>");
   try {
-    const pay = await db.lastPayment(userId);
-    if (!pay) return ctx.reply("У пользователя нет оплат для возврата.");
-    await bot.api.raw.refundStarPayment({ user_id: Number(userId), telegram_payment_charge_id: pay.charge_id });
-    const prem = await db.getPremium(userId);
-    if (prem.recurring && prem.chargeId && !prem.canceled) {
-      await bot.api.raw
-        .editUserStarSubscription({ user_id: Number(userId), telegram_payment_charge_id: prem.chargeId, is_canceled: true })
-        .catch((e) => console.warn("Не удалось отменить автопродление:", e.description || e));
-    }
-    await db.markRefunded(pay.id, userId);
-    await ctx.reply(`Возвращено ${pay.amount} Stars пользователю ${userId}. Премиум отключён.`);
+    const r = await refundLastPayment(userId);
+    await ctx.reply(r.ok ? `Возвращено ${r.amount} Stars пользователю ${userId}. Премиум отключён.` : r.error);
   } catch (e) {
     console.error("refund:", e);
     await ctx.reply("Не получилось: " + (e.description || e.message));
+  }
+});
+
+// /stats — короткая сводка для админов
+bot.command("stats", async (ctx) => {
+  if (!isAdmin(ctx.from.id) || !db.hasDb()) return;
+  try {
+    const st = await db.adminStats();
+    await ctx.reply(
+      `📊 Hayanmi\n\n` +
+        `Пользователи: ${st.users.total} (сегодня +${st.users.day}, за неделю +${st.users.week})\n` +
+        `Прошли анкету: ${st.users.onboarded}\n` +
+        `Активны: сегодня ${st.active.day}, за неделю ${st.active.week}\n\n` +
+        `Платные подписки: ${st.subs.paid} (автопродление у ${st.subs.renewing})\n` +
+        `Пробный период: ${st.subs.trials}, подарки: ${st.subs.gifts}\n` +
+        `Выручка: ${fmtNum(st.money.month)} ⭐ за 30 дней, ${fmtNum(st.money.total)} ⭐ всего\n\n` +
+        `ИИ за сутки: фото ${st.aiDay.photo || 0}, рецепты ${st.aiDay.recipe || 0}, коуч ${st.aiDay.coach || 0}`
+    );
+  } catch (e) {
+    console.error("stats:", e);
+    await ctx.reply("Не получилось собрать статистику.");
   }
 });
 
