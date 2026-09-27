@@ -871,6 +871,7 @@
       </section>
 
       <button class="primary" id="save-rem" type="button">Сохранить напоминания</button>
+      <button class="secondary accent" id="invite-btn" type="button" style="margin-top:10px">Пригласить друга · +7 дней Премиума</button>
       <button class="secondary" id="sub-btn" type="button" style="margin-top:10px">${state.premium?.active ? "Моя подписка" : "Hayanmi Премиум"}</button>
       ${state.homeScreen && state.homeScreen !== "unsupported"
         ? `<button class="secondary" id="hs-profile" type="button" style="margin-top:10px" ${state.homeScreen === "added" ? "disabled" : ""}>${state.homeScreen === "added" ? "Hayanmi уже на главном экране" : "Добавить на главный экран"}</button>`
@@ -882,6 +883,7 @@
       ${tabbarHtml("")}`;
     bindTabs();
     document.getElementById("legal-btn").addEventListener("click", openLegal);
+    document.getElementById("invite-btn").addEventListener("click", () => { haptic(); renderReferral(() => renderProfile()); });
     document.getElementById("delete-btn").addEventListener("click", deleteAccount);
     const adminBtn = document.getElementById("admin-btn");
     if (adminBtn) adminBtn.addEventListener("click", () => { haptic(); renderAdmin(); });
@@ -967,9 +969,9 @@
     app.innerHTML = `
       <h2 class="q-title display" style="margin-top:4px">Админ-панель</h2>
       <div class="loading"><div class="spinner" aria-label="Загрузка"></div></div>`;
-    let d;
+    let d, bc;
     try {
-      d = await api("/admin/stats");
+      [d, bc] = await Promise.all([api("/admin/stats"), api("/admin/broadcast")]);
     } catch (e) {
       return renderMessage("Нет доступа", e.code === "forbidden" ? "Эта панель только для админов." : "Не получилось загрузить статистику.", false);
     }
@@ -1003,6 +1005,7 @@
         <div class="kv"><span class="muted">Выручка за всё время</span><strong>${fmt(st.money.total)} ⭐ · ${usd(st.money.total)}</strong></div>
         <div class="kv"><span class="muted">Оплат за 30 дней / возвратов</span><strong>${st.money.month_count} / ${st.money.refunds}</strong></div>
         <div class="kv"><span class="muted">Заблокировали бота</span><strong>${st.users.blocked}</strong></div>
+        <div class="kv"><span class="muted">Пришли по приглашению / с наградой</span><strong>${st.refs?.invited ?? 0} / ${st.refs?.rewarded ?? 0}</strong></div>
       </section>
 
       <div class="section-title"><span>ИИ за сутки</span></div>
@@ -1019,6 +1022,8 @@
       </div>
       <div class="error" id="find-err" role="alert"></div>
 
+      ${broadcastHtml(bc)}
+
       <div class="section-title"><span>Последние оплаты</span></div>
       ${d.payments.length ? d.payments.map((p) => `
         <button class="entry pay" type="button" data-uid="${esc(p.user_id)}">
@@ -1030,6 +1035,7 @@
         </button>`).join("") : `<section class="card empty"><p class="note muted" style="margin:0">Оплат пока нет.</p></section>`}`;
 
     document.getElementById("refresh").addEventListener("click", () => { haptic(); renderAdmin(); });
+    bindBroadcast(bc);
     const find = async (query) => {
       const q = String(query || "").trim();
       const err = document.getElementById("find-err");
@@ -1109,6 +1115,153 @@
         showAlert(e.code === "no_payments" ? "Нет оплат для возврата." : "Не получилось вернуть: " + (e.data?.message || "ошибка"));
       }
     });
+  }
+
+  // ---------- Пригласи друга ----------
+  const GIFT = `<svg width="56" height="56" viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="10" width="17" height="10.5" rx="2" fill="none" stroke="#D4F25A" stroke-width="1.8"/><rect x="2.5" y="6.5" width="19" height="4" rx="1.2" fill="#D4F25A"/><path d="M12 6.5V10.5" stroke="#0E0F0C" stroke-width="2"/><path d="M12 10.5V20.5" stroke="#D4F25A" stroke-width="1.8"/><path d="M12 6.3C10.5 3.5 7.2 3.4 7.2 5.2C7.2 6.4 9.5 6.5 12 6.5C14.5 6.5 16.8 6.4 16.8 5.2C16.8 3.4 13.5 3.5 12 6.3Z" fill="none" stroke="#D4F25A" stroke-width="1.6" stroke-linejoin="round"/></svg>`;
+
+  async function renderReferral(onBack) {
+    setBack(onBack || (() => renderProfile()));
+    app.innerHTML = `<div class="loading" style="margin-top:30vh"><div class="spinner" aria-label="Загрузка"></div></div>`;
+    let r;
+    try {
+      r = await api("/referral");
+    } catch (e) {
+      return renderMessage("Не получилось загрузить", "Проверьте интернет и попробуйте ещё раз.", false);
+    }
+    const shareText = `Считаю калории по фото в Hayanmi — прямо в Telegram 📸 Заходи по моей ссылке, и мы оба получим ${r.days} дней Премиума бесплатно:`;
+
+    app.innerHTML = `
+      <div class="ref-hero">
+        ${GIFT}
+        <h2 class="q-title display" style="margin:14px 0 8px;text-align:center">${r.days} дней Премиума<br><span style="color:var(--accent)">тебе и другу</span></h2>
+        <p class="q-sub" style="text-align:center;margin:0">Отправь ссылку другу. Когда он ответит на вопросы анкеты, вы оба получите Премиум.</p>
+      </div>
+
+      <ol class="steps" style="margin:22px 0 6px">
+        <li>Поделись своей ссылкой</li>
+        <li>Друг открывает Hayanmi и проходит анкету</li>
+        <li>Вам обоим приходит по ${r.days} дней Премиума</li>
+      </ol>
+
+      <div class="stat-row" style="grid-template-columns:repeat(2,minmax(0,1fr))">
+        <div class="stat"><div class="v display">${r.invited}</div><div class="k">перешли по ссылке</div></div>
+        <div class="stat"><div class="v display">${r.rewarded * r.days}</div><div class="k">дней Премиума получено</div></div>
+      </div>
+
+      <label class="label" for="ref-link" style="margin-top:4px">Твоя ссылка</label>
+      <input class="text-input" id="ref-link" type="text" readonly value="${esc(r.link)}">
+      <div class="grow"></div>
+      <div class="stack">
+        <button class="primary" id="share" type="button">Поделиться</button>
+        <button class="secondary" id="copy" type="button">Скопировать ссылку</button>
+        <div class="small muted" style="text-align:center">Награда — не больше чем за ${r.max} друзей</div>
+      </div>`;
+
+    document.getElementById("share").addEventListener("click", () => {
+      haptic();
+      const url = "https://t.me/share/url?url=" + encodeURIComponent(r.link) + "&text=" + encodeURIComponent(shareText);
+      try { if (tg?.openTelegramLink) return tg.openTelegramLink(url); } catch (e) {}
+      window.open(url, "_blank");
+    });
+    const copyBtn = document.getElementById("copy");
+    copyBtn.addEventListener("click", async () => {
+      const field = document.getElementById("ref-link");
+      try {
+        await navigator.clipboard.writeText(r.link);
+      } catch (e) {
+        try { field.select(); document.execCommand("copy"); } catch (e2) {}
+      }
+      haptic("success");
+      copyBtn.textContent = "Скопировано ✓";
+      setTimeout(() => { copyBtn.textContent = "Скопировать ссылку"; }, 1600);
+    });
+  }
+
+  // ---------- Рассылка (блок админ-панели) ----------
+  const AUD_RU = { all: "Все", free: "Без подписки", premium: "С подпиской", inactive: "Не заходили 3+ дня" };
+  let bcPoll = null;
+
+  function broadcastHtml(b) {
+    if (!b || !b.status || !b.counts) return "";
+    const st = b.status;
+    const progress = st.startedAt
+      ? `<div class="small ${st.running ? "" : "muted"}" id="bc-progress" style="margin-top:10px">${st.running ? "Идёт рассылка" : "Последняя рассылка"} (${AUD_RU[st.audience] || ""}): отправлено ${st.sent} из ${st.total}${st.blocked ? `, заблокировали ${st.blocked}` : ""}${st.failed ? `, ошибок ${st.failed}` : ""}</div>`
+      : "";
+    return `
+      <div class="section-title" style="margin-top:14px"><span>Рассылка</span></div>
+      <section class="card">
+        <div class="chips" role="radiogroup" aria-label="Кому" style="margin-top:0;flex-wrap:wrap;overflow:visible">
+          ${Object.keys(AUD_RU).map((a) => `<button class="chip small ${a === "all" ? "on" : ""}" type="button" data-aud="${a}" aria-pressed="${a === "all"}">${AUD_RU[a]} · ${b.counts[a] ?? 0}</button>`).join("")}
+        </div>
+        <label for="bc-text" class="sr-only">Текст рассылки</label>
+        <textarea class="text-input area" id="bc-text" maxlength="3500" placeholder="Текст сообщения. Например: «Новинка — ИИ-повар подберёт ужин под твою норму!»"></textarea>
+        <label class="switch-row" style="margin-top:12px">
+          <span>Кнопка «Открыть Hayanmi»</span>
+          <input type="checkbox" class="switch" id="bc-btn" checked>
+        </label>
+        <div class="row-btns" style="margin-top:12px">
+          <button class="secondary" id="bc-test" type="button">Тест себе</button>
+          <button class="primary" id="bc-send" type="button" style="flex:1;height:50px" ${st.running ? "disabled" : ""}>Отправить</button>
+        </div>
+        ${progress}
+      </section>`;
+  }
+
+  function bindBroadcast(b) {
+    if (!b || !b.status || !b.counts || !document.getElementById("bc-send")) return;
+    let aud = "all";
+    app.querySelectorAll("[data-aud]").forEach((x) => x.addEventListener("click", () => {
+      haptic("select");
+      aud = x.dataset.aud;
+      app.querySelectorAll("[data-aud]").forEach((y) => {
+        const on = y.dataset.aud === aud;
+        y.className = "chip small" + (on ? " on" : "");
+        if (y.setAttribute) y.setAttribute("aria-pressed", String(on));
+      });
+    }));
+    const text = () => document.getElementById("bc-text").value.trim();
+    const withButton = () => document.getElementById("bc-btn").checked;
+
+    document.getElementById("bc-test").addEventListener("click", async () => {
+      if (!text()) { haptic("error"); return showAlert("Напишите текст сообщения."); }
+      try {
+        await api("/admin/broadcast", { method: "POST", body: { text: text(), button: withButton(), test: true } });
+        haptic("success");
+        showAlert("Тестовое сообщение отправлено тебе в чат с ботом.");
+      } catch (e) { showAlert("Не получилось отправить тест."); }
+    });
+
+    document.getElementById("bc-send").addEventListener("click", async () => {
+      if (!text()) { haptic("error"); return showAlert("Напишите текст сообщения."); }
+      const n = b.counts[aud] ?? 0;
+      if (!n) return showAlert("В этой аудитории никого нет.");
+      if (!(await showConfirm(`Отправить сообщение: «${AUD_RU[aud]}» — ${n} чел.? Отменить рассылку после старта нельзя.`))) return;
+      try {
+        const r = await api("/admin/broadcast", { method: "POST", body: { text: text(), audience: aud, button: withButton() } });
+        haptic("success");
+        showAlert(`Рассылка запущена: ${r.total} чел.`);
+        renderAdmin();
+      } catch (e) {
+        showAlert(e.code === "already_running" ? "Рассылка уже идёт — дождитесь окончания." : "Не получилось запустить рассылку.");
+      }
+    });
+
+    // Пока идёт рассылка — обновляем прогресс каждые 2 секунды
+    clearInterval(bcPoll);
+    if (b.status.running) {
+      bcPoll = setInterval(async () => {
+        const el = document.getElementById("bc-progress");
+        if (!el) return clearInterval(bcPoll);
+        try {
+          const d = await api("/admin/broadcast");
+          const st = d.status;
+          el.textContent = `${st.running ? "Идёт рассылка" : "Готово"}: отправлено ${st.sent} из ${st.total}` +
+            (st.blocked ? `, заблокировали ${st.blocked}` : "") + (st.failed ? `, ошибок ${st.failed}` : "");
+          if (!st.running) { clearInterval(bcPoll); const s = document.getElementById("bc-send"); if (s) s.disabled = false; }
+        } catch (e) {}
+      }, 2000);
+    }
   }
 
   // ---------- Удаление всех данных ----------
@@ -1209,6 +1362,7 @@
           <button class="primary" id="buy" type="button">Оформить за ${fmt(plan === "year" ? prices.year : prices.month)} Stars</button>
           ${trial ? `<button class="secondary" id="trial" type="button">Попробовать ${prices.trialDays} дня бесплатно</button>` : ""}
           <button class="link-btn" id="later" type="button">Не сейчас</button>
+          <div class="small muted" style="text-align:center">Или <button class="inline-link" id="pw-invite" type="button">пригласи друга</button> — получите по неделе Премиума бесплатно</div>
           ${prices.starsShop ? `<div class="small muted" style="text-align:center">Нет звёзд? <button class="inline-link" id="stars-shop" type="button">Купить Stars в ${esc(prices.starsShopName || "боте")}</button></div>` : ""}
           <div class="small muted" style="text-align:center"><button class="inline-link" id="pw-legal" type="button">Условия и конфиденциальность</button> · помощь — /paysupport в боте</div>
         </div>
@@ -1223,6 +1377,7 @@
       document.getElementById("close").addEventListener("click", close);
       document.getElementById("later").addEventListener("click", close);
       document.getElementById("pw-legal").addEventListener("click", openLegal);
+      document.getElementById("pw-invite").addEventListener("click", () => { haptic(); renderReferral(() => renderPaywall(reason)); });
       const shopBtn = document.getElementById("stars-shop");
       if (shopBtn) shopBtn.addEventListener("click", () => {
         haptic();

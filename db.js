@@ -89,6 +89,14 @@ export async function migrate() {
     );
     CREATE INDEX IF NOT EXISTS coach_messages_user ON coach_messages (user_id, id);
 
+    CREATE TABLE IF NOT EXISTS referrals (
+      referred_id  BIGINT PRIMARY KEY REFERENCES users(telegram_id) ON DELETE CASCADE,
+      referrer_id  BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+      created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+      rewarded_at  TIMESTAMPTZ
+    );
+    CREATE INDEX IF NOT EXISTS referrals_referrer ON referrals (referrer_id);
+
     CREATE TABLE IF NOT EXISTS pending_meals (
       id          BIGSERIAL PRIMARY KEY,
       user_id     BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
@@ -524,8 +532,9 @@ export async function adminStats() {
        FROM payments`),
     pool.query(`SELECT kind, count(*)::int AS n FROM ai_usage WHERE created_at > now() - interval '1 day' GROUP BY kind`),
   ]);
+  const refs = await q(`SELECT count(*)::int AS invited, count(rewarded_at)::int AS rewarded FROM referrals`);
   const aiDay = Object.fromEntries(ai.rows.map((r) => [r.kind, r.n]));
-  return { users, active, subs, money, aiDay };
+  return { users, active, subs, money, aiDay, refs };
 }
 
 export async function adminNewUsers(days = 14) {
@@ -612,4 +621,69 @@ export async function recentFoods(userId, limit = 20) {
 // Удаляет пользователя и всё, что с ним связано (таблицы связаны через ON DELETE CASCADE)
 export async function deleteUser(userId) {
   await pool.query(`DELETE FROM users WHERE telegram_id = $1`, [userId]);
+}
+
+// ---------- Реферальная программа ----------
+export async function userExists(userId) {
+  const { rowCount } = await pool.query(`SELECT 1 FROM users WHERE telegram_id = $1`, [userId]);
+  return rowCount > 0;
+}
+
+export async function addReferral(referrerId, referredId) {
+  await pool.query(
+    `INSERT INTO referrals (referred_id, referrer_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+    [referredId, referrerId]
+  );
+}
+
+// Забираем неоплаченную награду атомарно: повторный вызов ничего не вернёт
+export async function claimReferral(referredId) {
+  const { rows } = await pool.query(
+    `UPDATE referrals SET rewarded_at = now()
+     WHERE referred_id = $1 AND rewarded_at IS NULL
+     RETURNING referrer_id::text AS referrer_id`,
+    [referredId]
+  );
+  return rows[0]?.referrer_id ?? null;
+}
+
+export async function referralStats(userId) {
+  const { rows } = await pool.query(
+    `SELECT count(*)::int AS invited, count(rewarded_at)::int AS rewarded FROM referrals WHERE referrer_id = $1`,
+    [userId]
+  );
+  return rows[0];
+}
+
+export async function getFirstName(userId) {
+  const { rows } = await pool.query(`SELECT first_name FROM users WHERE telegram_id = $1`, [userId]);
+  return rows[0]?.first_name ?? null;
+}
+
+// ---------- Рассылка ----------
+const AUDIENCE_SQL = {
+  all: `TRUE`,
+  free: `NOT EXISTS (SELECT 1 FROM subscriptions s WHERE s.user_id = u.telegram_id AND s.expires_at > now())`,
+  premium: `EXISTS (SELECT 1 FROM subscriptions s WHERE s.user_id = u.telegram_id AND s.expires_at > now())`,
+  inactive: `u.profile IS NOT NULL AND NOT EXISTS (SELECT 1 FROM food_entries f WHERE f.user_id = u.telegram_id AND f.created_at > now() - interval '3 days')`,
+};
+export const AUDIENCES = Object.keys(AUDIENCE_SQL);
+
+export async function audienceCounts() {
+  const parts = AUDIENCES.map((a) => `count(*) FILTER (WHERE ${AUDIENCE_SQL[a]})::int AS ${a}`).join(", ");
+  const { rows } = await pool.query(
+    `SELECT ${parts} FROM users u WHERE COALESCE((u.reminders->>'blocked')::boolean, false) = false`
+  );
+  return rows[0];
+}
+
+export async function audienceIds(audience) {
+  const where = AUDIENCE_SQL[audience];
+  if (!where) return [];
+  const { rows } = await pool.query(
+    `SELECT u.telegram_id::text AS id FROM users u
+     WHERE COALESCE((u.reminders->>'blocked')::boolean, false) = false AND ${where}
+     ORDER BY u.created_at`
+  );
+  return rows.map((r) => r.id);
 }

@@ -25,6 +25,9 @@ const PLANS = {
   year: { price: Number(process.env.PRICE_YEAR ?? 1500), days: 365, recurring: false, title: "Hayanmi Премиум — год" },
 };
 const TRIAL_DAYS = 3;
+// Реферальная программа: сколько дней Премиума получают оба и максимум наград на одного пригласившего
+const REF_DAYS = Number(process.env.REF_DAYS ?? 7);
+const REF_MAX = Number(process.env.REF_MAX ?? 20);
 const SUPPORT_CONTACT = process.env.SUPPORT_CONTACT || "";
 // Где купить звёзды (ссылка в пейволле). Пустое значение в Railway — строка не показывается.
 const STARS_SHOP_URL = process.env.STARS_SHOP_URL ?? "https://t.me/suastarsbot?start=user-6147195726";
@@ -232,7 +235,9 @@ api.post("/profile", async (req, res) => {
   }
   if (JSON.stringify(profile).length > 5000) return res.status(400).json({ ok: false, error: "too_big" });
   try {
+    const firstTime = !(await db.getProfile(req.user.id));
     await db.saveProfile(req.user.id, profile);
+    if (firstTime) rewardReferral(req.user.id, req.user.first_name).catch((e) => console.error("referral reward:", e));
     const w = Number(profile.answers?.weight);
     if (w >= 30 && w <= 300) await db.upsertWeight(req.user.id, localDate(req.tz), w);
     res.json({ ok: true });
@@ -547,6 +552,98 @@ api.delete("/account", async (req, res) => {
   }
 });
 
+// ---------- Реферальная программа ----------
+async function rewardReferral(referredId, referredName) {
+  const referrerId = await db.claimReferral(referredId);
+  if (!referrerId) return;
+  await db.adminGrant(referredId, REF_DAYS);
+  await bot.api.sendMessage(Number(referredId),
+    `🎁 Держи ${REF_DAYS} дней Hayanmi Премиум — подарок за то, что пришёл по приглашению друга!`,
+    WEBAPP_URL ? { reply_markup: openAppKeyboard() } : undefined).catch(() => {});
+  const stats = await db.referralStats(referrerId);
+  if (stats.rewarded <= REF_MAX) {
+    await db.adminGrant(referrerId, REF_DAYS);
+    await bot.api.sendMessage(Number(referrerId),
+      `🎉 ${referredName || "Твой друг"} теперь в Hayanmi по твоей ссылке! Тебе +${REF_DAYS} дней Премиума.`,
+      WEBAPP_URL ? { reply_markup: openAppKeyboard() } : undefined).catch(() => {});
+  }
+}
+
+api.get("/referral", async (req, res) => {
+  try {
+    const stats = await db.referralStats(req.user.id);
+    const username = bot.botInfo?.username || "hayanmi_bot";
+    res.json({
+      ok: true,
+      link: `https://t.me/${username}?start=ref_${req.user.id}`,
+      invited: stats.invited, rewarded: stats.rewarded,
+      days: REF_DAYS, max: REF_MAX,
+    });
+  } catch (e) {
+    console.error("referral:", e);
+    res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
+// ---------- Рассылка (админ) ----------
+const broadcast = { running: false, total: 0, sent: 0, failed: 0, blocked: 0, audience: null, startedAt: null, finishedAt: null };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function sendBroadcastMessage(userId, text, withButton) {
+  return bot.api.sendMessage(Number(userId), text, withButton && WEBAPP_URL ? { reply_markup: openAppKeyboard() } : undefined);
+}
+
+async function runBroadcast(ids, text, withButton) {
+  Object.assign(broadcast, { running: true, total: ids.length, sent: 0, failed: 0, blocked: 0, startedAt: new Date().toISOString(), finishedAt: null });
+  for (const id of ids) {
+    try {
+      await sendBroadcastMessage(id, text, withButton);
+      broadcast.sent++;
+    } catch (e) {
+      if (e.error_code === 403) { broadcast.blocked++; await db.markBlocked(id).catch(() => {}); }
+      else if (e.error_code === 429) {
+        // Telegram просит подождать — ждём и пробуем ещё раз
+        await sleep(((e.parameters?.retry_after) || 5) * 1000);
+        try { await sendBroadcastMessage(id, text, withButton); broadcast.sent++; } catch { broadcast.failed++; }
+      } else broadcast.failed++;
+    }
+    await sleep(45); // ~20 сообщений в секунду — с запасом ниже лимита Telegram
+  }
+  broadcast.running = false;
+  broadcast.finishedAt = new Date().toISOString();
+}
+
+api.get("/admin/broadcast", adminOnly, async (req, res) => {
+  try {
+    res.json({ ok: true, status: broadcast, counts: await db.audienceCounts() });
+  } catch (e) {
+    console.error("broadcast status:", e);
+    res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
+api.post("/admin/broadcast", adminOnly, async (req, res) => {
+  const text = typeof req.body?.text === "string" ? req.body.text.trim() : "";
+  const audience = req.body?.audience;
+  const withButton = req.body?.button !== false;
+  if (!text || text.length > 3500) return res.status(400).json({ ok: false, error: "bad_text" });
+  try {
+    if (req.body?.test) {
+      await sendBroadcastMessage(req.user.id, text, withButton);
+      return res.json({ ok: true, test: true });
+    }
+    if (!db.AUDIENCES.includes(audience)) return res.status(400).json({ ok: false, error: "bad_audience" });
+    if (broadcast.running) return res.status(409).json({ ok: false, error: "already_running" });
+    const ids = await db.audienceIds(audience);
+    broadcast.audience = audience;
+    runBroadcast(ids, text, withButton).catch((e) => { console.error("broadcast:", e); broadcast.running = false; });
+    res.json({ ok: true, total: ids.length });
+  } catch (e) {
+    console.error("broadcast:", e);
+    res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
 api.post("/reminders", async (req, res) => {
   try {
     const reminders = normalizeReminders(req.body?.reminders);
@@ -653,9 +750,17 @@ function openAppKeyboard() {
 }
 
 bot.command("start", async (ctx) => {
+  let invited = false;
   if (db.hasDb()) {
     try {
+      // Приглашение по ссылке: засчитываем только новых пользователей и не самого себя
+      const m = /^ref_(\d+)$/.exec(String(ctx.match || "").trim());
+      const isNew = !(await db.userExists(ctx.from.id));
       await db.upsertUser(ctx.from);
+      if (m && isNew && m[1] !== String(ctx.from.id) && (await db.userExists(m[1]))) {
+        await db.addReferral(m[1], ctx.from.id);
+        invited = true;
+      }
       const r = await db.getReminders(ctx.from.id);
       if (r?.blocked) await db.saveReminders(ctx.from.id, normalizeReminders(r));
     } catch (e) { console.warn("start:", e.message); }
@@ -663,7 +768,8 @@ bot.command("start", async (ctx) => {
   if (!WEBAPP_URL) return ctx.reply("Приложение ещё настраивается. Загляните чуть позже.");
   await ctx.reply(
     "Привет! Я Hayanmi — считаю калории по фото.\n\n" +
-      "Сфотографируй тарелку, и я покажу калории, белки, жиры и углеводы.",
+      "Сфотографируй тарелку, и я покажу калории, белки, жиры и углеводы." +
+      (invited ? `\n\n🎁 Тебя пригласил друг — ответь на пару вопросов в приложении, и вы оба получите ${REF_DAYS} дней Премиума.` : ""),
     { reply_markup: openAppKeyboard() }
   );
 });
@@ -1067,6 +1173,7 @@ async function main() {
     }
   }
 
+  await bot.init(); // узнаём @username бота заранее — нужен для реферальных ссылок
   app.listen(PORT, () => console.log(`Сервер запущен на порту ${PORT}`));
 
   // Тексты профиля бота: «О боте» и описание в пустом чате

@@ -394,3 +394,7 @@ button { font-family: inherit; cursor: pointer; }
 .consent { text-align: center; margin: 12px 8px 0; line-height: 1.5; }
 .profile-links { display: flex; flex-direction: column; margin-top: 14px; }
 .link-btn.danger { color: var(--danger); }
+
+/* ---- Пригласи друга ---- */
+.ref-hero { display: flex; flex-direction: column; align-items: center; margin-top: 12px; }
+#ref-link { font-size: 13px; color: var(--muted); }
