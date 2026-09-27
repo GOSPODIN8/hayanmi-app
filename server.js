@@ -56,6 +56,45 @@ function localDate(tz) {
   }).format(new Date());
 }
 const fmtNum = (n) => Math.round(n).toLocaleString("ru-RU");
+const fmtL = (ml) => (ml / 1000).toLocaleString("ru-RU", { maximumFractionDigits: 2 });
+
+// Минуты от начала суток у пользователя
+function localMinutes(tz) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: validTz(tz) ? tz : DEFAULT_TZ, hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  }).formatToParts(new Date());
+  const h = Number(parts.find((p) => p.type === "hour").value);
+  const m = Number(parts.find((p) => p.type === "minute").value);
+  return h * 60 + m;
+}
+const toMin = (hhmm) => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3, 5));
+
+// ---------- Вода и напоминания: настройки по умолчанию ----------
+function waterGoal(profile) {
+  const w = Number(profile?.answers?.weight) || 70;
+  return Math.min(3500, Math.max(1500, Math.round((w * 30) / 100) * 100));
+}
+
+const DEFAULT_REMINDERS = {
+  meals: true,
+  water: true,
+  times: { breakfast: "09:00", lunch: "13:30", dinner: "19:00" },
+};
+const isTime = (t) => typeof t === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(t);
+
+function normalizeReminders(r) {
+  const src = r && typeof r === "object" ? r : {};
+  const times = { ...DEFAULT_REMINDERS.times };
+  for (const k of Object.keys(times)) if (isTime(src.times?.[k])) times[k] = src.times[k];
+  return {
+    meals: typeof src.meals === "boolean" ? src.meals : DEFAULT_REMINDERS.meals,
+    water: typeof src.water === "boolean" ? src.water : DEFAULT_REMINDERS.water,
+    times,
+  };
+}
+
+// Когда проверяем воду и какая доля нормы должна быть выпита к этому времени
+const WATER_CHECKS = [["11:00", 0.25], ["15:00", 0.5], ["18:00", 0.75]];
 
 // ---------- Проверка, что запрос пришёл из Telegram ----------
 function checkInitData(initData) {
@@ -133,12 +172,22 @@ api.get("/state", async (req, res) => {
   try {
     const date = isDate(req.query.date) ? req.query.date : new Date().toISOString().slice(0, 10);
     const premium = await db.getPremium(req.user.id);
-    const [profile, entries, quota] = await Promise.all([
+    const [profile, entries, quota, waterMl, rawReminders] = await Promise.all([
       db.getProfile(req.user.id),
       db.getEntries(req.user.id, date),
       photoQuota(req.user.id, premium),
+      db.waterTotal(req.user.id, date),
+      db.getReminders(req.user.id),
     ]);
-    res.json({ ok: true, profile, entries, quota, premium: publicPremium(premium), prices: publicPrices() });
+    const reminders = normalizeReminders(rawReminders);
+    // Пользователь снова открыл приложение — значит, бот не заблокирован
+    if (rawReminders?.blocked) await db.saveReminders(req.user.id, reminders);
+    res.json({
+      ok: true, profile, entries, quota,
+      premium: publicPremium(premium), prices: publicPrices(),
+      water: { ml: waterMl, goal: waterGoal(profile) },
+      reminders,
+    });
   } catch (e) {
     console.error("state:", e);
     res.status(500).json({ ok: false, error: "server_error" });
@@ -204,6 +253,33 @@ api.post("/entries", async (req, res) => {
     res.json({ ok: true, entries: await db.getEntries(req.user.id, date) });
   } catch (e) {
     console.error("entries:", e);
+    res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
+api.post("/water", async (req, res) => {
+  const { date, delta } = req.body || {};
+  const d = Number(delta);
+  if (!isDate(date) || !Number.isInteger(d) || d === 0 || Math.abs(d) > 1000) {
+    return res.status(400).json({ ok: false, error: "bad_request" });
+  }
+  try {
+    if (d > 0) await db.addWater(req.user.id, date, d);
+    else await db.removeLastWater(req.user.id, date);
+    res.json({ ok: true, ml: await db.waterTotal(req.user.id, date) });
+  } catch (e) {
+    console.error("water:", e);
+    res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
+api.post("/reminders", async (req, res) => {
+  try {
+    const reminders = normalizeReminders(req.body?.reminders);
+    await db.saveReminders(req.user.id, reminders);
+    res.json({ ok: true, reminders });
+  } catch (e) {
+    console.error("reminders:", e);
     res.status(500).json({ ok: false, error: "server_error" });
   }
 });
@@ -301,6 +377,13 @@ function openAppKeyboard() {
 }
 
 bot.command("start", async (ctx) => {
+  if (db.hasDb()) {
+    try {
+      await db.upsertUser(ctx.from);
+      const r = await db.getReminders(ctx.from.id);
+      if (r?.blocked) await db.saveReminders(ctx.from.id, normalizeReminders(r));
+    } catch (e) { console.warn("start:", e.message); }
+  }
   if (!WEBAPP_URL) return ctx.reply("Приложение ещё настраивается. Загляните чуть позже.");
   await ctx.reply(
     "Привет! Я Hayanmi — считаю калории по фото.\n\n" +
@@ -450,6 +533,87 @@ bot.callbackQuery(/^cancel:(\d+)$/, async (ctx) => {
   }
 });
 
+// Кнопка «+250 мл» в напоминании о воде
+bot.callbackQuery(/^water:(\d{2,4})$/, async (ctx) => {
+  const userId = ctx.from.id;
+  try {
+    const ml = Math.min(1000, Number(ctx.match[1]));
+    const date = localDate(await db.getTimezone(userId));
+    await db.addWater(userId, date, ml);
+    const total = await db.waterTotal(userId, date);
+    const goal = waterGoal(await db.getProfile(userId));
+    await ctx.answerCallbackQuery({ text: `+${ml} мл 💧` });
+    await ctx.editMessageText(
+      `💧 Записал +${ml} мл. Сегодня: ${fmtL(total)} из ${fmtL(goal)} л` + (total >= goal ? "\nНорма воды выполнена 🎉" : ""),
+      { reply_markup: new InlineKeyboard().text("+250 мл", "water:250") }
+    );
+  } catch (e) {
+    console.error("water cb:", e);
+    await ctx.answerCallbackQuery({ text: "Не получилось, попробуй ещё раз" }).catch(() => {});
+  }
+});
+
+// ---------- Планировщик напоминаний: раз в минуту ----------
+const MEAL_REMINDER_TEXT = {
+  breakfast: "☀️ Доброе утро! Не забудь записать завтрак — просто пришли мне фото тарелки.",
+  lunch: "🍽 Время обеда. Сфотографируй, что ешь, и пришли сюда — посчитаю калории.",
+  dinner: "🌙 Ужин уже был? Пришли фото — добавлю в дневник.",
+};
+const REMINDER_WINDOW_MIN = 15; // если сервер перезапускался, напомним в течение 15 минут
+
+async function sendReminder(userId, text, keyboard) {
+  try {
+    await bot.api.sendMessage(userId, text, keyboard ? { reply_markup: keyboard } : undefined);
+  } catch (e) {
+    if (e.error_code === 403) await db.markBlocked(userId); // бот заблокирован — больше не пишем
+    else console.warn("Напоминание не отправлено:", userId, e.description || e.message);
+  }
+}
+
+let ticking = false;
+async function reminderTick() {
+  if (ticking || !db.hasDb()) return;
+  ticking = true;
+  try {
+    const users = await db.listReminderUsers();
+    for (const u of users) {
+      const r = normalizeReminders(u.reminders);
+      if (!r.meals && !r.water) continue;
+      const now = localMinutes(u.timezone);
+      const date = localDate(u.timezone);
+      const due = (t) => now >= toMin(t) && now < toMin(t) + REMINDER_WINDOW_MIN;
+
+      if (r.meals) {
+        for (const [meal, time] of Object.entries(r.times)) {
+          if (!due(time)) continue;
+          if (!(await db.claimReminder(u.telegram_id, meal, date))) continue;
+          if (await db.mealLogged(u.telegram_id, date, meal)) continue;
+          await sendReminder(u.telegram_id, MEAL_REMINDER_TEXT[meal], WEBAPP_URL ? openAppKeyboard() : null);
+        }
+      }
+
+      if (r.water) {
+        for (const [time, share] of WATER_CHECKS) {
+          if (!due(time)) continue;
+          if (!(await db.claimReminder(u.telegram_id, "water_" + time, date))) continue;
+          const goal = waterGoal(u.profile);
+          const total = await db.waterTotal(u.telegram_id, date);
+          if (total >= goal * share) continue;
+          await sendReminder(
+            u.telegram_id,
+            `💧 Сегодня выпито ${fmtL(total)} из ${fmtL(goal)} л. Самое время для стакана воды!`,
+            new InlineKeyboard().text("+250 мл", "water:250")
+          );
+        }
+      }
+    }
+  } catch (e) {
+    console.error("Ошибка напоминаний:", e);
+  } finally {
+    ticking = false;
+  }
+}
+
 // Проверка перед оплатой: Telegram ждёт ответ до 10 секунд
 bot.on("pre_checkout_query", async (ctx) => {
   const q = ctx.preCheckoutQuery;
@@ -563,6 +727,9 @@ async function main() {
       menu_button: { type: "web_app", text: "Hayanmi", web_app: { url: WEBAPP_URL } },
     });
   }
+  setInterval(reminderTick, 60_000);
+  setInterval(() => db.hasDb() && db.cleanupReminderLog().catch(() => {}), 6 * 3600_000);
+
   await bot.start({
     drop_pending_updates: true,
     onStart: (me) => console.log(`Бот @${me.username} запущен`),

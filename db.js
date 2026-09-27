@@ -52,6 +52,24 @@ export async function migrate() {
     ALTER TABLE users ADD COLUMN IF NOT EXISTS trial_used_at TIMESTAMPTZ;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS timezone TEXT;
 
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS reminders JSONB;
+
+    CREATE TABLE IF NOT EXISTS water_logs (
+      id          BIGSERIAL PRIMARY KEY,
+      user_id     BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+      entry_date  DATE NOT NULL,
+      ml          INT NOT NULL,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS water_logs_user_date ON water_logs (user_id, entry_date);
+
+    CREATE TABLE IF NOT EXISTS reminder_log (
+      user_id     BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+      kind        TEXT NOT NULL,
+      local_date  DATE NOT NULL,
+      PRIMARY KEY (user_id, kind, local_date)
+    );
+
     CREATE TABLE IF NOT EXISTS pending_meals (
       id          BIGSERIAL PRIMARY KEY,
       user_id     BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
@@ -305,4 +323,72 @@ export async function sumKcal(userId, date) {
     [userId, date]
   );
   return rows[0].kcal;
+}
+
+// ---------- Вода ----------
+export async function addWater(userId, date, ml) {
+  await pool.query(`INSERT INTO water_logs (user_id, entry_date, ml) VALUES ($1, $2, $3)`, [userId, date, ml]);
+}
+
+export async function removeLastWater(userId, date) {
+  await pool.query(
+    `DELETE FROM water_logs WHERE id = (
+       SELECT id FROM water_logs WHERE user_id = $1 AND entry_date = $2 ORDER BY created_at DESC, id DESC LIMIT 1
+     )`,
+    [userId, date]
+  );
+}
+
+export async function waterTotal(userId, date) {
+  const { rows } = await pool.query(
+    `SELECT COALESCE(sum(ml), 0)::int AS ml FROM water_logs WHERE user_id = $1 AND entry_date = $2`,
+    [userId, date]
+  );
+  return rows[0].ml;
+}
+
+// ---------- Напоминания ----------
+export async function getReminders(userId) {
+  const { rows } = await pool.query(`SELECT reminders FROM users WHERE telegram_id = $1`, [userId]);
+  return rows[0]?.reminders ?? null;
+}
+
+export async function saveReminders(userId, reminders) {
+  await pool.query(`UPDATE users SET reminders = $2 WHERE telegram_id = $1`, [userId, JSON.stringify(reminders)]);
+}
+
+export async function listReminderUsers() {
+  const { rows } = await pool.query(
+    `SELECT telegram_id, timezone, reminders, profile FROM users
+     WHERE profile IS NOT NULL AND COALESCE((reminders->>'blocked')::boolean, false) = false`
+  );
+  return rows;
+}
+
+export async function mealLogged(userId, date, meal) {
+  const { rows } = await pool.query(
+    `SELECT 1 FROM food_entries WHERE user_id = $1 AND entry_date = $2 AND meal = $3 LIMIT 1`,
+    [userId, date, meal]
+  );
+  return rows.length > 0;
+}
+
+// true — если сегодня такое напоминание ещё не отправляли (и сразу отмечаем)
+export async function claimReminder(userId, kind, date) {
+  const { rowCount } = await pool.query(
+    `INSERT INTO reminder_log (user_id, kind, local_date) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+    [userId, kind, date]
+  );
+  return rowCount > 0;
+}
+
+export async function markBlocked(userId) {
+  await pool.query(
+    `UPDATE users SET reminders = COALESCE(reminders, '{}'::jsonb) || '{"blocked": true}'::jsonb WHERE telegram_id = $1`,
+    [userId]
+  );
+}
+
+export async function cleanupReminderLog() {
+  await pool.query(`DELETE FROM reminder_log WHERE local_date < current_date - 7`);
 }

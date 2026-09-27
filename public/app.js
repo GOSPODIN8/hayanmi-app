@@ -108,7 +108,7 @@
   }
 
   // Общее состояние приложения
-  const state = { profile: null, entries: [], quota: null, premium: null, prices: null, date: localDate() };
+  const state = { profile: null, entries: [], quota: null, premium: null, prices: null, water: null, reminders: null, date: localDate() };
 
   async function loadState() {
     const data = await api("/state?date=" + state.date);
@@ -117,6 +117,8 @@
     state.quota = data.quota || null;
     state.premium = data.premium || null;
     state.prices = data.prices || null;
+    state.water = data.water || null;
+    state.reminders = data.reminders || null;
     return data;
   }
 
@@ -370,6 +372,48 @@
 
   const ICON_X = `<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7L17 17M17 7L7 17" stroke="#A6A59E" stroke-width="2" stroke-linecap="round"/></svg>`;
 
+  // ---------- Вода ----------
+  const DROP = `<svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3C12 3 6 10 6 14.5A6 6 0 0 0 18 14.5C18 10 12 3 12 3Z" fill="none" stroke="#86B6FF" stroke-width="2" stroke-linejoin="round"/></svg>`;
+  const liters = (ml) => (ml / 1000).toLocaleString("ru-RU", { maximumFractionDigits: 2 });
+
+  function waterHtml() {
+    if (!state.water) return "";
+    const { ml, goal } = state.water;
+    const pct = Math.min(100, Math.round((ml / goal) * 100));
+    return `
+      <section class="card water">
+        <div class="water-top">
+          ${DROP}
+          <div class="water-info">
+            <div class="water-title">Вода</div>
+            <div class="small muted" id="w-text">${liters(ml)} из ${liters(goal)} л${ml >= goal ? " · норма выполнена" : ""}</div>
+          </div>
+          <button class="icon-btn round" id="w-minus" type="button" aria-label="Убрать 250 мл" ${ml > 0 ? "" : "disabled"}>
+            <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12H19" stroke="#F3F1EA" stroke-width="2.2" stroke-linecap="round"/></svg>
+          </button>
+          <button class="water-add" id="w-plus" type="button">+250 мл</button>
+        </div>
+        <div class="bar" style="margin-top:12px"><div id="w-bar" style="width:${pct}%;background:var(--protein)"></div></div>
+      </section>`;
+  }
+
+  let waterBusy = false;
+  async function changeWater(delta) {
+    if (waterBusy) return;
+    waterBusy = true;
+    haptic(delta > 0 ? "select" : undefined);
+    try {
+      const data = await api("/water", { method: "POST", body: { date: state.date, delta } });
+      state.water = { ...state.water, ml: data.ml };
+      if (delta > 0 && data.ml >= state.water.goal && data.ml - delta < state.water.goal) haptic("success");
+      renderHome();
+    } catch (e) {
+      showAlert("Не получилось записать воду. Попробуйте ещё раз.");
+    } finally {
+      waterBusy = false;
+    }
+  }
+
   function promoHtml() {
     if (!state.premium || state.premium.active) return "";
     const prices = state.prices || { month: 250, year: 1500, trialDays: 3 };
@@ -452,6 +496,8 @@
         </div>
       </section>
 
+      ${waterHtml()}
+
       ${promoHtml()}
 
       ${mealsHtml || `<section class="card empty"><p class="note muted" style="margin:0">Пока пусто. Сфотографируй еду — и калории посчитаются сами.</p></section>`}
@@ -460,7 +506,7 @@
       ${quotaHtml}
       <button class="primary" id="add-photo" type="button">Добавить еду по фото</button>
       <div class="row-btns">
-        <button class="secondary" id="edit" type="button">Мои данные</button>
+        <button class="secondary" id="edit" type="button">Профиль</button>
         <button class="secondary ${state.premium?.active ? "" : "accent"}" id="sub" type="button">${state.premium?.active ? "Подписка" : "Премиум"}</button>
       </div>
       <input id="file" type="file" accept="image/*" hidden>`;
@@ -503,12 +549,12 @@
       }
     });
 
-    document.getElementById("edit").addEventListener("click", () => {
-      haptic();
-      draft = { ...state.profile.answers, _editing: true };
-      stepIndex = 0;
-      renderStep();
-    });
+    document.getElementById("edit").addEventListener("click", () => { haptic(); renderProfile(); });
+
+    const wPlus = document.getElementById("w-plus");
+    const wMinus = document.getElementById("w-minus");
+    if (wPlus) wPlus.addEventListener("click", () => changeWater(250));
+    if (wMinus) wMinus.addEventListener("click", () => changeWater(-250));
   }
 
   // ---------- Фото: сжатие перед отправкой ----------
@@ -606,6 +652,90 @@
       <div class="grow"></div>
       <button class="primary" id="home" type="button">Понятно</button>`;
     document.getElementById("home").addEventListener("click", () => renderHome());
+  }
+
+  // ---------- Профиль и напоминания ----------
+  function renderProfile() {
+    setBack(() => renderHome());
+    const a = state.profile.answers;
+    const r = state.profile.result;
+    const rem = JSON.parse(JSON.stringify(state.reminders || { meals: true, water: true, times: { breakfast: "09:00", lunch: "13:30", dinner: "19:00" } }));
+    const goalText = { lose: "Снизить вес", keep: "Держать вес", gain: "Набрать массу" }[a.goal] || "Держать вес";
+
+    app.innerHTML = `
+      <h2 class="q-title display" style="margin-top:4px">Профиль</h2>
+
+      <section class="card">
+        <div class="kv"><span class="muted">Норма</span><strong>${fmt(r.kcal)} ккал</strong></div>
+        <div class="kv"><span class="muted">Б / Ж / У</span><strong>${r.protein} / ${r.fat} / ${r.carbs} г</strong></div>
+        <div class="kv"><span class="muted">Цель</span><strong>${goalText}${a.target ? " · " + String(a.target).replace(".", ",") + " кг" : ""}</strong></div>
+        <div class="kv"><span class="muted">Вес · рост</span><strong>${String(a.weight).replace(".", ",")} кг · ${a.height} см</strong></div>
+        <button class="secondary" id="re-onboard" type="button" style="margin-top:12px">Изменить данные</button>
+      </section>
+
+      <div class="section-title" style="margin-top:8px"><span>Напоминания в Telegram</span></div>
+      <section class="card">
+        <label class="switch-row">
+          <span><strong>Еда</strong><br><span class="small muted">Только если приём пищи ещё не записан</span></span>
+          <input type="checkbox" class="switch" id="rem-meals" ${rem.meals ? "checked" : ""}>
+        </label>
+        <div class="times" id="times" ${rem.meals ? "" : "hidden"}>
+          <label class="time-row"><span>Завтрак</span><input type="time" id="t-breakfast" value="${rem.times.breakfast}"></label>
+          <label class="time-row"><span>Обед</span><input type="time" id="t-lunch" value="${rem.times.lunch}"></label>
+          <label class="time-row"><span>Ужин</span><input type="time" id="t-dinner" value="${rem.times.dinner}"></label>
+        </div>
+        <div class="divider"></div>
+        <label class="switch-row">
+          <span><strong>Вода</strong><br><span class="small muted">В 11:00, 15:00 и 18:00, если выпито мало</span></span>
+          <input type="checkbox" class="switch" id="rem-water" ${rem.water ? "checked" : ""}>
+        </label>
+      </section>
+
+      <div class="grow"></div>
+      <button class="primary" id="save-rem" type="button">Сохранить</button>`;
+
+    const mealsBox = document.getElementById("rem-meals");
+    mealsBox.addEventListener("change", () => {
+      haptic("select");
+      document.getElementById("times").hidden = !mealsBox.checked;
+    });
+    document.getElementById("rem-water").addEventListener("change", () => haptic("select"));
+
+    document.getElementById("re-onboard").addEventListener("click", () => {
+      haptic();
+      draft = { ...state.profile.answers, _editing: true };
+      stepIndex = 0;
+      renderStep();
+    });
+
+    document.getElementById("save-rem").addEventListener("click", async (e) => {
+      const btn = e.currentTarget;
+      const val = (id, fallback) => {
+        const v = document.getElementById(id).value;
+        return /^\d{2}:\d{2}$/.test(v) ? v : fallback;
+      };
+      const reminders = {
+        meals: mealsBox.checked,
+        water: document.getElementById("rem-water").checked,
+        times: {
+          breakfast: val("t-breakfast", rem.times.breakfast),
+          lunch: val("t-lunch", rem.times.lunch),
+          dinner: val("t-dinner", rem.times.dinner),
+        },
+      };
+      btn.disabled = true;
+      btn.textContent = "Сохраняю…";
+      try {
+        const data = await api("/reminders", { method: "POST", body: { reminders } });
+        state.reminders = data.reminders;
+        haptic("success");
+        renderHome();
+      } catch (err) {
+        btn.disabled = false;
+        btn.textContent = "Сохранить";
+        showAlert("Не получилось сохранить. Попробуйте ещё раз.");
+      }
+    });
   }
 
   // ---------- Премиум: показ пейволла время от времени ----------
