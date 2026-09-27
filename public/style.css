@@ -133,3 +133,14 @@ button { font-family: inherit; cursor: pointer; }
 .plan .pd { font-size: 13px; color: var(--muted); margin-top: 4px; }
 .plan .pp { display: flex; align-items: center; gap: 6px; font-size: 18px; font-weight: 700; white-space: nowrap; }
 .plan .save { position: absolute; right: 16px; top: -11px; padding: 3px 10px; border-radius: 999px; background: var(--accent); color: var(--bg); font-size: 12px; font-weight: 700; }
+
+/* ---- Промо Премиума на главной ---- */
+.promo { border: 1.5px solid var(--accent); background: rgba(212, 242, 90, 0.07); border-radius: 24px; padding: 18px; margin-bottom: 12px; }
+.promo-top { display: flex; justify-content: space-between; align-items: center; }
+.promo-title { font-size: 18px; }
+.promo-text { font-size: 14px; line-height: 1.45; color: var(--muted); margin: 8px 0 14px; }
+.promo-btn { height: 50px; font-size: 16px; }
+.row-btns { display: flex; gap: 10px; margin-top: 10px; }
+.row-btns .secondary { flex: 1; height: 50px; }
+.secondary.accent { border-color: var(--accent); color: var(--accent); }
+.icon-btn.close { background: var(--card); }

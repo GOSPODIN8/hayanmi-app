@@ -311,7 +311,12 @@
         return;
       }
       haptic("success");
+      const firstTime = !state.profile;
       state.profile = profile;
+      if (firstTime && state.premium && !state.premium.active) {
+        markPaywallShown();
+        return renderPaywall("onboarding");
+      }
       renderHome();
     });
   }
@@ -350,6 +355,27 @@
   }
 
   const ICON_X = `<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7L17 17M17 7L7 17" stroke="#A6A59E" stroke-width="2" stroke-linecap="round"/></svg>`;
+
+  function promoHtml() {
+    if (!state.premium || state.premium.active) return "";
+    const prices = state.prices || { month: 250, year: 1500, trialDays: 3 };
+    const trial = state.premium.trialAvailable;
+    const q = state.quota;
+    const sub = q && !q.unlimited && q.left <= 0
+      ? "Бесплатные распознавания закончились. Продолжайте без ограничений."
+      : "Безлимитное распознавание еды по фото и все новые функции.";
+    return `
+      <section class="promo">
+        <div class="promo-top">
+          <div class="promo-title display">Hayanmi <span style="color:var(--accent)">Премиум</span></div>
+          ${STAR}
+        </div>
+        <p class="promo-text">${sub}</p>
+        <button class="primary promo-btn" id="promo-btn" type="button">${trial
+          ? `Попробовать ${prices.trialDays} дня бесплатно`
+          : `Подключить от ${fmt(Math.round(prices.year / 12))} ⭐ в месяц`}</button>
+      </section>`;
+  }
 
   function renderHome() {
     setBack(null);
@@ -412,20 +438,24 @@
         </div>
       </section>
 
+      ${promoHtml()}
+
       ${mealsHtml || `<section class="card empty"><p class="note muted" style="margin:0">Пока пусто. Сфотографируй еду — и калории посчитаются сами.</p></section>`}
 
       <div class="grow"></div>
       ${quotaHtml}
       <button class="primary" id="add-photo" type="button">Добавить еду по фото</button>
-      <div class="links">
-        <button class="link-btn" id="edit" type="button">Мои данные</button>
-        <button class="link-btn" id="sub" type="button">Подписка</button>
+      <div class="row-btns">
+        <button class="secondary" id="edit" type="button">Мои данные</button>
+        <button class="secondary ${state.premium?.active ? "" : "accent"}" id="sub" type="button">${state.premium?.active ? "Подписка" : "Премиум"}</button>
       </div>
       <input id="file" type="file" accept="image/*" hidden>`;
 
     const openSub = () => { haptic(); state.premium?.active ? renderSubscription() : renderPaywall(); };
     document.getElementById("premium").addEventListener("click", openSub);
     document.getElementById("sub").addEventListener("click", openSub);
+    const promoBtn = document.getElementById("promo-btn");
+    if (promoBtn) promoBtn.addEventListener("click", openSub);
 
     app.querySelectorAll("[data-del]").forEach((btn) => {
       btn.addEventListener("click", async () => {
@@ -564,6 +594,19 @@
     document.getElementById("home").addEventListener("click", () => renderHome());
   }
 
+  // ---------- Премиум: показ пейволла время от времени ----------
+  const PAYWALL_EVERY_DAYS = 3;
+
+  async function shouldAutoPaywall() {
+    if (!state.premium || state.premium.active) return false;
+    const last = Number(await storage.get("paywall_last")) || 0;
+    return Date.now() - last > PAYWALL_EVERY_DAYS * 864e5;
+  }
+
+  function markPaywallShown() {
+    storage.set("paywall_last", String(Date.now()));
+  }
+
   // ---------- Премиум: пейволл ----------
   const STAR = `<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3L14.6 9L21 9.5L16 13.6L17.6 20L12 16.5L6.4 20L8 13.6L3 9.5L9.4 9Z" fill="#F4C84A"/></svg>`;
   const CHECK = `<svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5L10 17L19 7" fill="none" stroke="#D4F25A" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
@@ -581,12 +624,17 @@
 
     function draw() {
       app.innerHTML = `
-        <div style="display:flex;justify-content:space-between;align-items:center">${LOGO}</div>
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          ${LOGO}
+          <button class="icon-btn close" id="close" type="button" aria-label="Закрыть">${ICON_X}</button>
+        </div>
         <div style="margin:18px 0 20px">
           <h2 class="q-title display" style="font-size:30px;margin-bottom:10px">Hayanmi<br><span style="color:var(--accent)">Премиум</span></h2>
           <p class="q-sub" style="margin:0">${reason === "limit"
             ? "Бесплатные распознавания закончились. С Премиумом — без ограничений."
-            : "Считай всё одним фото — без ограничений."}</p>
+            : reason === "onboarding"
+              ? "Норма готова! Считайте калории по фото без ограничений."
+              : "Считай всё одним фото — без ограничений."}</p>
         </div>
         <div class="benefits">
           <div>${CHECK}<span>Безлимитное распознавание еды по фото</span></div>
@@ -607,7 +655,8 @@
         <div class="grow"></div>
         <div class="stack">
           <button class="primary" id="buy" type="button">Оформить за ${fmt(plan === "year" ? prices.year : prices.month)} Stars</button>
-          ${trial ? `<button class="link-btn" id="trial" type="button" style="color:var(--text)">Попробовать ${prices.trialDays} дня бесплатно</button>` : ""}
+          ${trial ? `<button class="secondary" id="trial" type="button">Попробовать ${prices.trialDays} дня бесплатно</button>` : ""}
+          <button class="link-btn" id="later" type="button">Не сейчас</button>
           <div class="small muted" style="text-align:center">Условия — команда /terms в чате с ботом · помощь — /paysupport</div>
         </div>`;
 
@@ -616,6 +665,9 @@
       );
       document.getElementById("buy").addEventListener("click", (e) => buy(plan, e.currentTarget));
       if (trial) document.getElementById("trial").addEventListener("click", startTrial);
+      const close = () => { haptic(); renderHome(); };
+      document.getElementById("close").addEventListener("click", close);
+      document.getElementById("later").addEventListener("click", close);
     }
 
     draw();
@@ -879,7 +931,12 @@
     }
 
     if (state.profile) {
-      renderHome();
+      if (await shouldAutoPaywall()) {
+        markPaywallShown();
+        renderPaywall("auto");
+      } else {
+        renderHome();
+      }
     } else {
       draft = {};
       stepIndex = 0;
